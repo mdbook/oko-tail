@@ -171,7 +171,7 @@ def gif(port, d):
         pg.keyboard.press("b"); pg.wait_for_timeout(2500)
         ctx.close(); b.close()
     webm = os.path.join(vid, os.listdir(vid)[0]); out = os.path.join(HERE, "demo.gif")
-    # ponytail: 10 fps, 720 wide, 32 colors, no dither keeps it under 2 MB and the text still crisp; more costs MBs fast
+    # note: 10 fps, 720 wide, 32 colors, no dither keeps it under 2 MB and the text still crisp; more costs MBs fast
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{skip:.2f}", "-i", webm, "-vf",
                     "fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=32:stats_mode=diff[p];"
                     "[b][p]paletteuse=dither=none:diff_mode=rectangle", out], check=True)

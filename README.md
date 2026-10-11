@@ -171,9 +171,10 @@ off loopback with no login.
 
 ## Security
 
-oko's tail shows your agent's full transcripts and can make it act, so treat access to it like access
-to the agent itself. By default it listens on `127.0.0.1` only and has no login, which is fine on a
-single-user machine. To use it from anywhere else, turn on one of the two built-in logins:
+oko's tail shows your agent's full transcripts, its memory and profile, and its cron prompts, and it
+can make it act, so treat access to it like access to the agent itself. By default it listens on
+`127.0.0.1` only and has no login, which is fine on a single-user machine. To use it from anywhere
+else, turn on one of the two built-in logins:
 
 - **Forward auth**, if you already run an identity provider (Authentik, Authelia, oauth2-proxy) in
   front of your services. Set `OKO_TAIL_AUTH_HEADER` to the header your proxy adds after a successful
@@ -398,6 +399,9 @@ python3 docs/shots.py              # regenerates the README screenshots from a d
 | GET | `/ctx?session=ID` | what's in the context: sizes by kind and the largest active rows since the last compaction (estimated at 4 characters per token) |
 | GET | `/tools?session=ID` | tool health for the last 7 days: per tool, calls, failures (an `error`, a non-zero `exit_code` or `success: false`), median, slowest and total time from call to result |
 | GET | `/queue?session=ID` | the agent's own queue for the main session, from the socket: messages hermes queued behind a running turn or a compaction and DMs held for idle (`where`, `from`, `peer`, `text`, `ts`). None of it is in `state.db` until its turn starts |
+| GET | `/search?q=` | the newest 50 matches across every session, with where each one matched |
+| GET | `/browse` | memory, profile, staged writes, skills and cron, read from `$HERMES_HOME` |
+| GET | `/skill?name=` | one skill's `SKILL.md` |
 | GET | `/cmds` | the slash menu: `commands` (the agent's own list when the socket answers, with `socket: true`) and `skills` |
 | POST | `/say` `{session,message,images?}` | returns 202; the turn streams from the gateway's `/chat/stream` on a server thread, so reloading the page never interrupts it |
 | POST | `/stop` `{session}`, `/steer` `{session,message}` | stop or steer a turn this page started, by its run ID |

@@ -25,7 +25,7 @@ The page opens at the last user turn; "load earlier steps" backfills from the lo
 Sending needs a concrete session, so the compose box appears only when one is focused.
 Endpoints: / (page), /app.css, /app.js, /rows?after=N&session=ID, /earlier?before=N&session=ID,
            /events (SSE; same payload as /rows: rows, turn state, live, gateway, stats), /cmds (slash menu), /queue (the agent's own queue),
-           /ctx?session=ID (what fills the context),
+           /ctx?session=ID (what fills the context), /search?q= (newest 50 matches across every session, with where it matched),
            /browse (memory, profile, staged writes, skills, cron: read off $HERMES_HOME), /skill?name=X (one SKILL.md),
            POST /say {session,message} -> 202, turn streams in the background (payload.live),
            POST /stop {session}, POST /steer {session,message} (only turns sent from this page: we hold their run_id),
