@@ -1,0 +1,652 @@
+/* oko-tail. A transcript, not a chat app: a narrow gutter carries time and speaker, and a tinted rule runs
+   down it so turns and sessions stay apart. oko's replies are set in a reading serif; its work reads as a
+   terminal session, with each tool call opening a recessed well that its result lands in. Every turn gets a
+   tally: one tick per tool call, height = how long it ran, red = failed. That tape is the one loud element. */
+:root{
+ --ground:#17161b;--panel:#1e1d23;--well:#111014;--rule:#2c2a33;--rule2:#3a3742;
+ --ink:#ebe6dd;--dim:#9b96a4;--faint:#67626f;
+ --iris:#7cc4b0;--amber:#e2a64b;--you:#c3b3ee;--you-ink:#ded6f3;--bad:#ef7a6a;--add:#8fc98a;--del:#e08378;--hunk:#8fb4e0;--term:#c2c6c9;
+ --serif:"Iowan Old Style","Charter","Bitstream Charter","Source Serif 4","Sitka Text",Cambria,Georgia,serif;
+ --sans:"Avenir Next","Seravek","Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+ --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Menlo,Consolas,monospace;
+ --gut:5.4rem;--w:64rem;
+ --ease:cubic-bezier(.2,0,0,1);--out:cubic-bezier(.3,0,1,1);--q:120ms;--s:220ms;--l:360ms;
+}
+*{box-sizing:border-box}
+html{background:var(--ground);scroll-padding-top:5rem}
+body{margin:0;color:var(--ink);font:15px/1.5 var(--sans);-webkit-text-size-adjust:100%}
+::selection{background:#7cc4b044}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--iris);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+[hidden]{display:none!important}
+
+/* header */
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--ground) 92%,transparent);
+ backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
+.bar{max-width:var(--w);margin:0 auto;padding:.55rem 1rem;display:flex;align-items:center;gap:.9rem;min-width:0}
+#mark{display:flex;align-items:center;gap:.5rem;width:calc(var(--gut) - .9rem);justify-content:flex-end;padding-right:.15rem;
+ font:600 1.3rem/1 var(--serif);letter-spacing:.01em;color:var(--ink);text-decoration:none;flex:0 0 auto}
+/* the mark: oko's tail (web/logo.svg, inlined). Dim until live; it wags while the agent works */
+#mark svg{width:1.75rem;height:1.75rem;flex:0 0 auto;opacity:.5;filter:saturate(.4);transform-origin:78% 92%;
+ transition:opacity var(--s) var(--ease),filter var(--s) var(--ease)}
+:root{--fox:#f28c2e;--fox-shade:#d7611f;--fox-tip:#fbeed5;--fox-rim:none}
+body.live #mark svg,body.busy #mark svg{opacity:1;filter:none}
+body.compacting #mark svg{opacity:1;filter:none}
+#mark:hover svg{transform:rotate(-9deg);transition:transform var(--l) cubic-bezier(.3,1.6,.5,1)}
+.sesswrap{flex:0 1 auto;min-width:0;position:relative}
+#sess{display:block;max-width:20rem;width:100%;background:transparent;color:var(--ink);border:0;border-radius:4px;
+ padding:.25rem 1.3rem .25rem .4rem;font:500 .9rem var(--sans);cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+ background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(-45deg,transparent 50%,var(--dim) 50%);
+ background-size:4px 4px;background-position:calc(100% - .6rem) 55%,calc(100% - .35rem) 55%;background-repeat:no-repeat;
+ transition:background-color var(--q) var(--ease)}
+#sess:hover,#sess[aria-expanded=true]{background-color:var(--panel)}
+#sesslist{position:absolute;top:calc(100% + .35rem);left:0;width:min(26rem,calc(100vw - 1.5rem));max-height:60vh;overflow-y:auto;z-index:8;
+ background:var(--panel);border:1px solid var(--rule2);border-radius:8px;box-shadow:0 14px 34px #0009;padding:.3rem;outline:0}
+@media(prefers-reduced-motion:no-preference){#sesslist{animation:drop var(--s) var(--ease)}}
+@keyframes drop{from{opacity:0;transform:translateY(-4px)}}
+.so{display:block;padding:.45rem .6rem;border-radius:5px;color:var(--ink);text-decoration:none}
+.so[aria-selected=true],.so:hover{background:var(--rule)}
+.so .sn{display:block;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.so .sm{display:block;font-size:.74rem;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.so.on .sn:before{content:"";display:inline-block;width:.4rem;height:.4rem;border-radius:50%;background:var(--iris);margin-right:.45rem;vertical-align:.1em}
+#state{color:var(--dim);font-size:.84rem;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+body.busy #state,body.compacting #state{color:var(--amber)}
+body.offline #state{color:var(--bad)}
+.grow{flex:1 1 0}
+#stats{color:var(--faint);font-size:.78rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+#stats b{font-weight:500;color:var(--dim)}
+#find,#steps{flex:0 0 auto;background:none;border:1px solid transparent;border-radius:4px;color:var(--dim);cursor:pointer;
+ transition:color var(--q) var(--ease),border-color var(--q) var(--ease),background var(--q) var(--ease)}
+#find{width:2rem;height:1.9rem;display:grid;place-items:center;padding:0}
+#find svg{width:1rem;height:1rem;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+#steps{padding:.28rem .6rem;font-size:.8rem}
+#find:hover,#steps:hover{color:var(--ink);background:var(--panel)}
+#steps[aria-pressed=true]{color:var(--ink);border-color:var(--rule2)}
+#search{max-width:var(--w);margin:0 auto;padding:0 1rem .55rem calc(var(--gut) + 1rem);display:flex;gap:.6rem;align-items:center}
+#q{flex:1;min-width:0;background:var(--well);color:var(--ink);border:1px solid var(--rule2);border-radius:6px;padding:.45rem .65rem;font:.92rem var(--sans)}
+#q:focus{outline:none;border-color:var(--iris)}
+#qn{color:var(--dim);font-size:.8rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+#qx{background:none;border:1px solid var(--rule2);border-radius:4px;color:var(--dim);font-size:.72rem;padding:.15rem .4rem;cursor:pointer}
+
+/* log rows */
+main{max-width:var(--w);margin:0 auto;padding:.25rem 1rem 9rem}
+#empty{color:var(--dim);padding:3rem 0 0 calc(var(--gut) + 1rem);font:1.05rem/1.6 var(--serif)}
+.row{display:grid;grid-template-columns:var(--gut) minmax(0,1fr);column-gap:1rem}
+/* off-screen rows skip style/layout/paint: a theme switch or resize then costs a screenful, not the whole log */
+#log .row{content-visibility:auto;contain-intrinsic-size:auto 4rem}
+.gut{padding:.6rem .8rem .5rem 0;border-right:2px solid var(--rail,var(--rule2));text-align:right;
+ font-size:.72rem;line-height:1.35;color:var(--faint);font-variant-numeric:tabular-nums}
+.who{display:block;font-size:.8rem;font-weight:600;color:var(--dim);margin-bottom:.05rem}
+.bd{padding:.5rem 0;min-width:0;position:relative}
+.oko{--rail:color-mix(in srgb,var(--iris) 45%,var(--rule))}
+.oko .who{color:var(--iris)}
+.in{margin-top:1.4rem;--rail:var(--you)}
+.in .who{color:var(--you)}
+.in .bd{font-size:1rem;line-height:1.55;color:var(--you-ink);max-width:72ch;overflow-wrap:anywhere}
+.in .md{white-space:normal}
+.in.mine .gut{color:var(--dim)}
+.in.sys{--rail:var(--faint)}
+.in.sys .who{color:var(--dim)}
+.in.sys .bd{color:var(--dim);font-size:.88rem}
+/* a peer agent's DM in the main session: the peer by name, a quiet source chip, the text in plain ink */
+.in.peer{--rail:var(--amber)}
+.in.peer .who{color:var(--amber)}
+.in.peer .bd{color:var(--ink)}
+.via{display:flex;align-items:center;gap:.4rem;width:max-content;max-width:100%;margin:.1rem 0 .35rem;
+  font:500 .72rem/1.5 var(--sans);letter-spacing:.02em;color:var(--dim);cursor:default}
+.via .src{padding:0 .45rem;border:1px solid var(--rule2);border-radius:999px;color:var(--faint);
+  text-transform:lowercase;font-size:.68rem}
+.day{margin-top:2.2rem}
+.day .gut{border-right-color:transparent}
+.day .bd{display:flex;align-items:center;gap:.8rem;padding:.1rem 0;color:var(--dim);font:600 .82rem var(--sans)}
+.day .bd:after{content:"";flex:1;border-top:1px solid var(--rule)}
+.sep{margin-top:1.6rem}
+.sep .gut{border-right-width:6px;padding-top:.15rem;padding-bottom:.15rem}
+.sep .bd{color:var(--dim);font-size:.8rem;padding:.15rem 0}
+.sep .bd span{color:var(--faint);font-variant-numeric:tabular-nums}
+.comp .bd{color:var(--amber);font-size:.84rem;padding:.25rem 0}
+.notice .gut{--rail:var(--faint)}
+.notice .who{color:var(--faint)}
+.notice.bad .who{color:var(--bad)}.notice.bad{--rail:var(--bad)}
+.notice.note .who{color:var(--amber)}
+.notice .bd .kd{color:var(--dim);font-size:.9rem;font-style:italic}
+.notice .bd .md{max-width:74ch;color:var(--dim);font-size:.94rem}
+.aux .bd{color:var(--faint)}
+.local{--rail:var(--rule2)}
+.local .who{color:var(--dim)}
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:.6rem .8rem;max-width:44rem;font-size:.88rem}
+.card h4{margin:0 0 .4rem;font:600 .9rem var(--sans)}
+.card ul{margin:.2rem 0;padding-left:1.1rem}.card li{margin:.1rem 0}
+.card code{font:.85em var(--mono);color:var(--ink)}
+.card .d{color:var(--dim)}
+
+/* oko's prose */
+.think{color:var(--dim);font-size:.85rem;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-width:76ch;margin:.05rem 0 .4rem;
+ padding-left:.7rem;border-left:1px solid var(--rule2);font-style:italic}
+.md{white-space:normal}.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md p{margin:.5em 0}.md ul,.md ol{margin:.45em 0;padding-left:1.4em}.md li{margin:.2em 0}.md li.sub{margin-left:1.2em}
+.md h3,.md h4,.md h5,.md h6{font-size:1.02em;font-weight:650;margin:1em 0 .35em;color:var(--ink)}
+.md strong{font-weight:650;color:var(--ink)}
+.md code{font:.84em var(--mono);background:var(--well);padding:.08em .32em;border-radius:3px;color:#e6dccb}
+.md pre.mdpre{position:relative;font:12.5px/1.55 var(--mono);background:var(--well);color:var(--term);padding:.6rem .8rem;border-radius:4px;
+ white-space:pre-wrap;overflow-wrap:anywhere;margin:.6em 0}
+.mdpre[data-lang]:before{content:attr(data-lang);float:right;margin:0 0 .2rem .8rem;font:10.5px/1.9 var(--sans);letter-spacing:.06em;
+ text-transform:uppercase;color:var(--faint);transition:opacity var(--q) var(--ease)}
+.mdpre[data-lang]:is(:hover,:focus-within):before{opacity:0} /* the copy button takes its corner */
+@media(hover:none){.mdpre[data-lang]:before{margin-right:2rem}}
+.hk{color:var(--hunk)}.hs{color:var(--add)}.hn{color:var(--amber)}.hc{color:var(--faint);font-style:italic}
+.md a{color:var(--iris);text-decoration-color:color-mix(in srgb,var(--iris) 40%,transparent);text-underline-offset:2px}
+.md a:hover{text-decoration-color:var(--iris)}
+.md blockquote{margin:.5em 0;padding-left:.85em;border-left:2px solid var(--rule2);color:var(--dim)}
+.md hr{border:0;border-top:1px solid var(--rule2);margin:.9em 0}
+.md .tbl{overflow-x:auto}.md table{border-collapse:collapse;font:.88em/1.45 var(--sans);margin:.6em 0}
+.md th,.md td{border:1px solid var(--rule2);padding:.25em .6em;text-align:left;vertical-align:top}.md th{font-weight:650;background:var(--panel)}
+.reply{font:1.06rem/1.62 var(--serif);max-width:68ch;overflow-wrap:anywhere;margin:.1rem 0;color:var(--ink);position:relative}
+.reply .md code{font-size:.8em}
+
+/* tool wells */
+.term{position:relative;background:var(--well);border-radius:4px;padding:.55rem .8rem;margin:.35rem 0 .5rem;
+ font:12.5px/1.55 var(--mono);color:var(--term);overflow-wrap:anywhere;border-left:2px solid transparent;
+ transition:border-color var(--s) var(--ease)}
+.term.failed{border-left-color:var(--bad)}
+.term pre{margin:0;font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.cmd{color:var(--ink)}
+.ps{color:var(--amber);user-select:none}
+.tool{color:var(--amber);font-weight:600}
+.out{margin-top:.45rem;padding-top:.45rem;border-top:1px dashed var(--rule)}
+.term>.out:first-child{margin-top:0;padding-top:0;border-top:0}
+.none{color:var(--faint)}
+dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.05rem 1rem;margin:.2rem 0 0}
+dt{color:var(--faint)}
+dd{margin:0;color:var(--ink);white-space:pre-wrap;min-width:0}
+.meta{display:flex;flex-wrap:wrap;gap:.2rem 1.2rem;margin-top:.45rem;color:var(--faint);font:11.5px var(--sans);font-variant-numeric:tabular-nums}
+.bad{color:var(--bad);font-weight:600}
+.err{color:var(--bad)}
+.add{color:var(--add)}.del{color:var(--del)}.hunk{color:var(--hunk)}
+.run{color:var(--faint);margin-top:.35rem;font-family:var(--sans);font-size:.78rem}
+.run .wisp{margin-right:.4em;opacity:.8}
+.fold{max-height:calc(var(--n) * 1lh);overflow:hidden;-webkit-mask-image:linear-gradient(#000 60%,transparent);mask-image:linear-gradient(#000 60%,transparent)}
+.more{display:inline-block;background:none;border:0;padding:.2rem 0 0;color:var(--faint);font:.75rem var(--sans);cursor:pointer;
+ text-decoration:underline dotted;text-underline-offset:3px}
+.more:hover{color:var(--ink)}
+
+/* copy */
+.cp{position:absolute;top:.3rem;right:.35rem;z-index:1;display:inline-flex;align-items:center;gap:.3em;background:var(--panel);
+ border:1px solid var(--rule2);border-radius:5px;color:var(--dim);font:.7rem var(--sans);padding:.2rem .32rem;cursor:pointer;opacity:0;
+ transition:opacity var(--q) var(--ease),color var(--q) var(--ease),border-color var(--q) var(--ease),background var(--q) var(--ease)}
+.cp svg{width:.82rem;height:.82rem;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.cp .ck,.cp.done .cs{display:none}.cp.done .ck{display:block}.cp .ck path{stroke-width:2;stroke-dasharray:14}
+.cpt:empty{display:none}
+.term:hover>.cp,.mdpre:hover>.cp,.bd:hover>.cp,.cpw:hover>.cp,.cp:focus-visible{opacity:1}
+.cp:hover{color:var(--ink);border-color:var(--faint)}
+.cp.done{color:var(--iris);border-color:color-mix(in srgb,var(--iris) 45%,transparent);opacity:1}
+.cp.fail{color:var(--bad);opacity:1}
+.bd>.cp{top:.45rem;right:0}
+.cpw{position:relative}.cpw>.cp{top:0;right:0}
+.thinkw>.cp{color:var(--faint)}
+@media(hover:none){.cp{opacity:.55}}
+
+/* turn tally: one tick per tool call, height = how long it ran */
+.tally .gut{padding-top:0;padding-bottom:0}
+.tally .bd{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem .9rem;padding:.05rem 0 .35rem}
+.tape{display:flex;align-items:flex-end;gap:2px;height:1rem;flex-wrap:wrap;max-width:min(100%,38rem)}
+.tick{width:5px;height:calc(.25rem + var(--d,.3) * .75rem);padding:0;border:0;border-radius:1px;background:var(--rule2);cursor:pointer;
+ transform-origin:bottom;transition:transform var(--q) var(--ease),background var(--s) var(--ease),height var(--s) var(--ease)}
+.tick.ok{background:color-mix(in srgb,var(--amber) 80%,var(--ground))}
+.tick.fail{background:var(--bad)}
+.tick.go{background:var(--amber)}
+@media(prefers-reduced-motion:no-preference){.tick.go{animation:pulse 1.2s ease-in-out infinite}}
+@keyframes pulse{50%{opacity:.35}}
+.tick:hover{transform:scaleY(1.3)}
+.tape.dense{gap:1px}.tape.dense .tick{width:3px}
+.sum{color:var(--faint);font-size:.76rem;font-variant-numeric:tabular-nums}
+.sum .bad{font-weight:500}
+.tgl{background:none;border:0;padding:0;color:var(--dim);font:.76rem var(--sans);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.tgl:hover{color:var(--ink)}
+.row.f.step{display:none}
+.row.f .thinkw{display:none}
+@media(prefers-reduced-motion:no-preference){
+ .reveal{animation:reveal var(--s) var(--ease)}
+ .flash{animation:flash 1.2s var(--ease)}
+}
+@keyframes reveal{from{opacity:0;transform:translateY(-3px)}}
+@keyframes flash{0%,30%{box-shadow:inset 3px 0 0 var(--amber),0 0 0 1px var(--amber)}to{box-shadow:inset 3px 0 0 transparent,0 0 0 1px transparent}}
+.row.hit>.bd{background:linear-gradient(90deg,#e2a64b14,transparent 60%)}
+.row.hit.now>.bd{background:linear-gradient(90deg,#e2a64b2e,transparent 70%)}
+
+/* live tail + streaming ghost */
+#tail{display:none}
+body.busy #tail,body.compacting #tail{display:grid}
+#tail .bd{display:flex;align-items:center;gap:.55rem;color:var(--amber);font-size:.85rem;font-variant-numeric:tabular-nums;padding:.45rem 0}
+#tail .wisp{width:1.6rem;height:1.6rem}
+.ghost .reply{color:color-mix(in srgb,var(--ink) 88%,var(--ground))}
+/* streaming: oko's tail flicks at the end of the text instead of a block cursor */
+.ghost .reply>:last-child:not(ul,ol,pre,div):after,.ghost .reply>:is(ul,ol):last-child>li:last-child:after{
+ content:"";display:inline-block;width:1.05em;height:1.05em;margin-left:.2em;vertical-align:-.18em;
+ background:url(logo.svg) center/contain no-repeat;transform-origin:78% 92%}
+@media(prefers-reduced-motion:no-preference){.ghost .reply :after{animation:flick .5s var(--ease) infinite alternate}}
+body.streaming #tail{display:none}
+.pend .bd{color:var(--you-ink);opacity:.75}
+.pend .st{display:block;color:var(--faint);font-size:.75rem;margin-top:.2rem}
+.pend.failed .st{color:var(--bad)}
+
+#jump{position:fixed;left:50%;transform:translateX(-50%);bottom:7.2rem;z-index:6;cursor:pointer;
+ background:var(--panel);color:var(--ink);border:1px solid var(--rule2);border-radius:999px;padding:.38rem .95rem;font:.8rem var(--sans);
+ box-shadow:0 6px 18px #0006;opacity:0;pointer-events:none;transition:opacity var(--s) var(--ease),transform var(--s) var(--ease)}
+#jump.on{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(-4px)}
+body:not(.composing) #jump{bottom:1.2rem}
+#earlier{display:none;grid-template-columns:var(--gut) minmax(0,1fr);column-gap:1rem;margin:.5rem 0 0}
+#earlier button{grid-column:2;justify-self:start;background:none;border:0;padding:.25rem 0;color:var(--faint);
+ font:.8rem var(--sans);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+#earlier button:hover{color:var(--ink)}#earlier button[disabled]{cursor:default;opacity:.6;text-decoration:none}
+
+/* compose */
+#compose{position:fixed;left:0;right:0;bottom:0;z-index:7;padding:0 1rem calc(.7rem + env(safe-area-inset-bottom));
+ background:linear-gradient(transparent,var(--ground) 1.2rem)}
+#compose .box,#cnotes,#slash{max-width:calc(var(--w) - 2rem - var(--gut) - 1rem);margin-left:auto;margin-right:auto;
+ transform:translateX(calc((var(--gut) + 1rem) / 2))}
+#compose .box{display:flex;align-items:flex-end;gap:.5rem;background:var(--panel);border:1px solid var(--rule2);border-radius:10px;
+ padding:.4rem .4rem .4rem .8rem;box-shadow:0 10px 30px #0007;transition:border-color var(--q) var(--ease)}
+#compose .box:focus-within{border-color:color-mix(in srgb,var(--iris) 55%,var(--rule2))}
+body.offline #compose .box{border-style:dashed}
+#msg{flex:1;min-width:0;resize:none;max-height:40vh;background:transparent;color:var(--ink);border:0;outline:0;
+ padding:.42rem 0;font:1rem/1.45 var(--sans);field-sizing:content}
+#msg::placeholder{color:var(--faint)}
+.acts{display:flex;gap:.35rem}
+#compose .box{padding-left:.35rem}
+#attach{flex:0 0 auto;width:2.1rem;height:2.1rem;display:grid;place-items:center;background:none;border:0;border-radius:6px;color:var(--faint);cursor:pointer;
+ transition:color var(--q) var(--ease),background var(--q) var(--ease)}
+#attach:hover{color:var(--ink);background:var(--rule)}
+#attach svg{width:1.05rem;height:1.05rem;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+#thumbs,.pend .imgs,.in .imgs{display:flex;flex-wrap:wrap;gap:.4rem}
+#thumbs{max-width:calc(var(--w) - 2rem - var(--gut) - 1rem);margin:0 auto .4rem;transform:translateX(calc((var(--gut) + 1rem) / 2))}
+.thumb{position:relative;width:4.2rem;height:4.2rem;border-radius:6px;overflow:hidden;border:1px solid var(--rule2);background:var(--well)}
+.thumb img,.imgs img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb button{position:absolute;top:.15rem;right:.15rem;width:1.2rem;height:1.2rem;border-radius:50%;border:0;padding:0;line-height:1;
+ background:#000b;color:var(--ink);font-size:.8rem;cursor:pointer}
+.imgs img{width:7rem;height:5rem;border-radius:5px;border:1px solid var(--rule2)}
+body.dragging #compose .box{border-color:var(--iris);border-style:dashed}
+#send,#stop{border-radius:7px;padding:.45rem .95rem;font:600 .84rem var(--sans);cursor:pointer;border:1px solid transparent;
+ transition:background var(--q) var(--ease),opacity var(--q) var(--ease),transform var(--q) var(--ease)}
+#send{background:var(--iris);color:#10201b}
+#send:hover{background:color-mix(in srgb,var(--iris) 85%,#fff)}
+#send:active,#stop:active{transform:scale(.97)}
+#send[disabled],body.offline #send{opacity:.4;cursor:default}
+#stop{background:transparent;color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,transparent)}
+#stop:hover{background:color-mix(in srgb,var(--bad) 12%,transparent)}
+#cnotes{min-height:1.1em;padding:.3rem .2rem 0;color:var(--dim);font-size:.78rem}
+#cnotes.err{color:var(--bad)}
+#slash{margin-bottom:.4rem;background:var(--panel);border:1px solid var(--rule2);border-radius:8px;box-shadow:0 10px 30px #0008;
+ max-height:min(22rem,45vh);overflow-y:auto;padding:.3rem}
+@media(prefers-reduced-motion:no-preference){#slash{animation:pop var(--s) var(--ease)}}
+@keyframes pop{from{opacity:0;transform:translateX(calc((var(--gut) + 1rem) / 2)) translateY(4px)}}
+.opt{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.8rem;align-items:baseline;padding:.38rem .55rem;border-radius:5px;cursor:pointer}
+.opt[aria-selected=true]{background:var(--rule)}
+.opt .n{font:600 .86rem var(--mono);color:var(--ink);white-space:nowrap}
+.opt .n i{font-style:normal;font-weight:400;color:var(--faint)}
+.opt .d{color:var(--dim);font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.opt .k{color:var(--faint);font-size:.72rem}
+.opt.skill .n{color:var(--you)}
+#slash .hd{color:var(--faint);font-size:.72rem;padding:.35rem .55rem .15rem}
+body.composing main{padding-bottom:11rem}
+
+/* keyboard help */
+#keys{position:fixed;inset:0;z-index:9;background:#0009;display:grid;place-items:center}
+#keys .card{min-width:18rem;padding:1rem 1.2rem}
+#keys h2{margin:0 0 .6rem;font:600 1.1rem var(--serif)}
+#keys dt{color:var(--ink);font:.84rem var(--mono)}#keys dd{color:var(--dim);font-size:.86rem}
+/* token panel: click the usage line */
+#stats{background:none;border:0;padding:.2rem .3rem;border-radius:4px;cursor:pointer}
+#stats:hover{color:var(--dim);background:var(--rule)}
+#ctxp{position:fixed;inset:0;z-index:9;background:#0009;display:grid;place-items:start center;padding:4.5rem 1rem 1rem;overflow:auto;
+ --c0:var(--iris);--c1:var(--amber);--c2:var(--you);--c3:var(--hunk);--c4:var(--add);--c5:var(--del)}
+#ctxp .card{width:min(40rem,100%);max-width:none;padding:1rem 1.2rem}
+#ctxp h2{margin:0 0 .4rem;font:600 1.1rem var(--serif)}
+#ctxp h3{margin:1rem 0 .4rem;font:600 .74rem var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+#ctxp p{margin:.35rem 0}#ctxp .dim{color:var(--dim);font-size:.82rem;white-space:pre-wrap}#ctxp .bad{color:var(--bad)}
+.cbig-n{font-variant-numeric:tabular-nums}.cbig-n b{font:600 1.35rem var(--serif);margin-right:.15rem}
+.cbar{position:relative;display:flex;height:.7rem;border-radius:99px;background:var(--well);box-shadow:inset 0 0 0 1px var(--rule)}
+.cbar i{background:var(--c);min-width:2px}.cbar i:first-child{border-radius:99px 0 0 99px}
+.cbar b{position:absolute;top:-.25rem;bottom:-.25rem;width:2px;background:var(--ink);opacity:.55;border-radius:1px}
+.clegend{display:flex;flex-wrap:wrap;gap:.2rem 1rem;list-style:none;margin:.45rem 0 0;padding:0;font-size:.8rem;color:var(--dim)}
+.clegend li::before{content:"";display:inline-block;width:.55rem;height:.55rem;border-radius:2px;background:var(--c);margin-right:.35rem}
+.clegend .n{margin-left:.3rem;color:var(--ink);font-variant-numeric:tabular-nums}
+.cbig{list-style:none;margin:0;padding:0}
+.cbig button{display:grid;grid-template-columns:1fr auto;gap:0 .8rem;width:100%;text-align:left;background:none;border:0;border-radius:4px;padding:.3rem .4rem;cursor:pointer}
+.cbig button:hover:not(:disabled){background:var(--rule)}.cbig button:disabled{opacity:.5;cursor:default}
+.cbig .k{font-size:.8rem;color:var(--dim)}.cbig .n{font-size:.8rem;font-variant-numeric:tabular-nums}
+.cbig .pv{grid-column:1/-1;font-size:.8rem;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctot{display:grid;grid-template-columns:repeat(auto-fill,minmax(7.5rem,1fr));gap:.3rem .8rem;margin:0}
+.ctot dt{font-size:.74rem;color:var(--faint)}.ctot dd{margin:0;font-variant-numeric:tabular-nums}
+.cmods{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem;margin:.3rem 0}.cmods .k{font-size:.8rem;color:var(--dim);margin-right:.2rem}
+.cmods .chip{font-size:.8rem;background:var(--well);border:1px solid var(--rule2);border-radius:99px;padding:.15rem .6rem;cursor:pointer}
+.cmods .chip:hover:not(:disabled){border-color:var(--iris)}.cmods .chip.on{border-color:var(--iris);color:var(--iris)}.cmods .chip:disabled{opacity:.5;cursor:default}
+
+@media(max-width:700px){
+ :root{--gut:0px}
+ .bar{gap:.5rem;padding:.5rem .75rem}
+ #mark{width:auto;font-size:1.15rem}
+ #stats{display:none}
+ .sesswrap{flex:0 0 auto}
+ #sess{max-width:40vw}
+ #sesslist{position:fixed;top:3rem;left:.75rem;right:.75rem;width:auto}
+ #state{flex:0 1 auto;font-size:.76rem}
+ #steps{padding:.28rem .4rem;font-size:.74rem}
+ main{padding-left:.75rem;padding-right:.75rem}
+ .row{display:block;border-left:2px solid var(--rail,var(--rule2));padding-left:.7rem}
+ .gut{border:0;text-align:left;padding:.55rem 0 0;display:flex;gap:.6rem;align-items:baseline}
+ .who{display:inline}
+ .bd{padding-top:.15rem}
+ .day,.tally{border-left-color:transparent}
+ .day{padding-left:0}.day .gut{display:none}
+ .sep{border-left-width:6px}.sep .gut{display:none}
+ .tally .gut{display:none}
+ #empty,#search{padding-left:0}
+ #search{padding:0 .75rem .5rem}
+ .term{margin-left:-.35rem;margin-right:-.35rem}
+ #compose{padding:0 .5rem calc(.5rem + env(safe-area-inset-bottom))}
+ #compose .box,#cnotes,#slash,#thumbs{transform:none;max-width:none}
+ @keyframes pop{from{opacity:0;transform:translateY(4px)}}
+ .opt{grid-template-columns:auto minmax(0,1fr)}.opt .k{display:none}
+}
+
+/* frost (misty slate ground, frosted-glass panels, slate-blue accent). Follows the system
+   light/dark like the site does. Toggled by the snowflake button or f; remembered per browser. */
+:root[data-theme=frost]{color-scheme:dark;
+ --g-a:#1b1e26;--g-b:#14151d;--g-c:#0f1017;--g-d:#0b0c12;--fog:rgba(180,187,197,.08);
+ --glass:rgba(40,44,54,.42);--glass2:rgba(48,53,64,.72);--glass-bd:rgba(180,187,197,.22);--glass-hi:rgba(210,216,224,.25);--glass-sh:rgba(0,0,0,.5);
+ --ground:#0f1017;--panel:var(--glass2);--well:rgba(8,9,14,.5);--rule:rgba(215,220,226,.1);--rule2:rgba(215,220,226,.2);
+ --ink:#e4e7eb;--dim:#adb3bc;--faint:#878c95;--iris:#a3b6cc;--you:#c9cfdb;--you-ink:#dfe3ea;--term:#cdd1d7;--amber:#d8b37a;--bad:#e08a80;--hunk:#9db3d8}
+@media(prefers-color-scheme:light){:root[data-theme=frost]{color-scheme:light;
+ --fox:#ee7f22;--fox-shade:#cc5a1c;--fox-tip:#fff9ec;--fox-rim:#c98a52;
+ --g-a:#eef0f3;--g-b:#cbd0d5;--g-c:#b4bac1;--g-d:#a7adb6;--fog:rgba(255,255,255,.35);
+ --glass:rgba(240,242,244,.46);--glass2:rgba(244,246,247,.8);--glass-bd:rgba(255,255,255,.6);--glass-hi:rgba(255,255,255,.85);--glass-sh:rgba(31,35,44,.28);
+ --ground:#cbd0d5;--well:rgba(255,255,255,.45);--rule:rgba(36,39,50,.1);--rule2:rgba(36,39,50,.2);
+ --ink:#222630;--dim:#4e535c;--faint:#6f757d;--iris:#4d6a85;--you:#5f6a7d;--you-ink:#2c313c;--term:#2a2f38;--amber:#9a6412;--bad:#b0443a;
+ --add:#3b7535;--del:#a4463c;--hunk:#3e6597}}
+[data-theme=frost] body{min-height:100vh;
+ background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E"),
+  radial-gradient(1100px 780px at 18% 12%,var(--g-a),transparent 62%),radial-gradient(980px 900px at 88% 84%,var(--g-c),transparent 58%),
+  radial-gradient(700px 620px at 62% 40%,var(--fog),transparent 60%),linear-gradient(158deg,var(--g-b) 0%,var(--g-c) 52%,var(--g-d) 100%);
+ background-attachment:fixed}
+[data-theme=frost] ::selection{background:color-mix(in srgb,var(--iris) 30%,transparent)}
+[data-theme=frost] header{background:var(--glass);border-bottom-color:var(--glass-bd);
+ -webkit-backdrop-filter:blur(22px) saturate(1.18);backdrop-filter:blur(22px) saturate(1.18)}
+[data-theme=frost] #compose{background:none}
+[data-theme=frost] :is(#compose .box,.card,#sesslist,#slash,#jump){background:var(--glass);border-color:var(--glass-bd);border-radius:14px;
+ box-shadow:0 22px 50px -26px var(--glass-sh),0 1px 0 0 var(--glass-hi) inset;-webkit-backdrop-filter:blur(16px) saturate(1.15);backdrop-filter:blur(16px) saturate(1.15)}
+[data-theme=frost] #jump{border-radius:999px}
+/* menus float over text, so they get near-opaque frost: legible first, glassy second. ([role] lifts this past
+   the glass rule's :is() specificity; the header's own backdrop-filter also stops a nested blur from sampling) */
+[data-theme=frost] :is(#sesslist,#slash)[role]{background:color-mix(in srgb,var(--ground) 96%,transparent);
+ -webkit-backdrop-filter:blur(28px) saturate(1.2);backdrop-filter:blur(28px) saturate(1.2)}
+[data-theme=frost] :is(.term,.md pre.mdpre,.thumb){border-radius:10px}
+[data-theme=frost] .md code{color:var(--ink)}
+[data-theme=frost] #send{color:var(--ground)}
+[data-theme=frost] #send:hover{background:color-mix(in srgb,var(--iris) 85%,var(--ink))}
+#theme{width:2rem;height:1.9rem;display:grid;place-items:center;padding:0;flex:0 0 auto;background:none;border:1px solid transparent;
+ border-radius:4px;color:var(--dim);cursor:pointer;transition:color var(--q) var(--ease),background var(--q) var(--ease)}
+#theme svg{width:1rem;height:1rem;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+#theme:hover{color:var(--ink);background:var(--panel)}
+/* the button cycles default -> frost -> shelf -> shelf-dark and shows where it goes next */
+#theme svg{display:none}
+#theme[data-next=frost] .i-frost,#theme[data-next=shelf] .i-shelf,#theme[data-next=shelf-dark] .i-shelf-dark,#theme[data-next=default] .i-default{display:block}
+
+/* ---- life: oko's tail is the activity indicator, and things arrive instead of appearing.
+   body[data-phase] = wait | think | tool | write | compact while a turn is in flight (set by tick()).
+   wait = nothing back from the model yet: the tail dozes (slow, small) instead of swaying like real thinking. */
+.wisp{display:inline-block;flex:0 0 auto;width:1.1em;height:1.1em;vertical-align:-.22em;
+ background:url(logo.svg) center/contain no-repeat;transform-origin:78% 92%}
+@media(prefers-reduced-motion:no-preference){
+ .wisp{animation:sway 2.4s ease-in-out infinite}
+ [data-phase=tool] :is(.wisp,#mark svg){animation:wag .62s var(--ease) infinite alternate}
+ [data-phase=write] :is(.wisp,#mark svg){animation:flick .5s var(--ease) infinite alternate}
+ [data-phase=think] :is(.ghost .wisp,#mark svg){animation:sway 2.4s ease-in-out infinite}
+ [data-phase=wait] :is(.ghost .wisp,#mark svg){animation:doze 3.8s ease-in-out infinite}
+ [data-phase=compact] :is(.wisp,#mark svg){animation:curl 2.8s cubic-bezier(.45,0,.2,1) infinite}
+ .run .wisp{animation:wag .62s var(--ease) infinite alternate}
+}
+@keyframes sway{0%,100%{transform:rotate(5deg) skewX(-3deg)}50%{transform:rotate(-11deg) skewX(4deg)}}
+@keyframes wag{from{transform:rotate(9deg) skewX(-5deg)}to{transform:rotate(-15deg) skewX(6deg)}}
+@keyframes flick{from{transform:rotate(-3deg)}to{transform:rotate(12deg) scale(1.06)}}
+@keyframes doze{0%,100%{transform:rotate(3deg)}50%{transform:rotate(-4deg) scale(.95)}}
+@keyframes curl{0%,100%{transform:rotate(0) scale(1)}42%,58%{transform:rotate(-52deg) scale(.72,.66)}}
+/* the label beside it shimmers, like the words are being worked on */
+.shimmer{background:linear-gradient(100deg,currentColor 38%,color-mix(in srgb,currentColor 30%,#fff) 50%,currentColor 62%) 0 0/250% 100%;
+ -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+@media(prefers-reduced-motion:no-preference){.shimmer{animation:shimmer 2.2s linear infinite}}
+@keyframes shimmer{from{background-position:120% 0}to{background-position:-120% 0}}
+
+/* connection dot: breathes while live, ripples while busy, red when the agent is offline */
+#state:before{content:"";display:inline-block;width:.42rem;height:.42rem;margin-right:.5rem;border-radius:50%;vertical-align:.07em;
+ background:var(--faint);color:var(--faint);transition:background var(--l) var(--ease)}
+body.live #state:before{background:var(--iris);color:var(--iris)}
+body:is(.busy,.compacting) #state:before{background:var(--amber);color:var(--amber)}
+body.offline #state:before{background:var(--bad);color:var(--bad)}
+@media(prefers-reduced-motion:no-preference){
+ body.live #state:before{animation:breathe 3.2s ease-in-out infinite}
+ body:is(.busy,.compacting) #state:before{animation:ring 1.4s var(--ease) infinite}
+}
+@keyframes breathe{50%{box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%,transparent)}}
+@keyframes ring{from{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}to{box-shadow:0 0 0 .5rem transparent}}
+
+/* first paint: a skeleton until the first rows land, then the real empty state (oko's tail, idling) */
+#empty .skel{display:grid;gap:.95rem;padding:0 2rem 0 0}
+#empty .skel i{display:block;height:.75rem;border-radius:4px;
+ background:linear-gradient(90deg,var(--rule) 0 40%,var(--rule2) 50%,var(--rule) 60%) 0 0/300% 100%}
+#empty .skel i:nth-child(1){width:34%}#empty .skel i:nth-child(2){width:78%}#empty .skel i:nth-child(3){width:66%}#empty .skel i:nth-child(4){width:42%}
+@media(prefers-reduced-motion:no-preference){#empty .skel i{animation:shimmer 1.6s linear infinite}}
+body:not(.ready) #empty p,body.ready #empty .skel{display:none}
+#empty p{margin:0;display:flex;align-items:center;gap:.8rem}
+#empty .wisp.big{width:2.4rem;height:2.4rem}
+@media(prefers-reduced-motion:no-preference){#empty p{animation:enter .6s var(--spring)}}
+
+/* arrivals: live rows rise in, tool ticks grow out of the tape, results settle into their well */
+:root{--spring:cubic-bezier(.16,1,.3,1);--pop:cubic-bezier(.3,1.5,.5,1)}
+@media(prefers-reduced-motion:no-preference){
+ .row.enter{animation:enter .42s var(--spring) both}
+ .row.in.enter{animation:enter-in .46s var(--spring) both}
+ .out.enter{animation:settle .36s var(--ease) both}
+ .tick.new{animation:grow .38s var(--pop) both}
+ .tick.go.new{animation:grow .38s var(--pop) both,pulse 1.2s ease-in-out .38s infinite}
+ .tick.landed{animation:land .5s var(--pop)}
+ .row.landed>.gut{animation:landed 1.6s var(--ease)}
+ .pend .st.ok:before{content:"✓ ";display:inline-block;animation:pop-in .3s var(--pop)}
+ .cp.done{animation:pop-in .26s var(--pop)}
+ .cp.done .ck path{animation:draw .34s .05s var(--ease) both}
+ #search:not([hidden]){animation:drop var(--s) var(--ease)}
+ :is(#keys,#ctxp):not([hidden]){animation:fade .18s var(--ease)}
+ :is(#keys,#ctxp):not([hidden]) .card{animation:pop-in .3s var(--pop)}
+ #sesslist .so{animation:enter .3s var(--spring) both;animation-delay:calc(var(--i,0) * 16ms)}
+ #jump.on.unseen{animation:bob 1.8s ease-in-out infinite}
+ .ghost:not([hidden]){animation:enter .34s var(--spring)}
+}
+@keyframes enter{from{opacity:0;transform:translateY(10px)}}
+@keyframes enter-in{from{opacity:0;transform:translateX(-8px)}}
+@keyframes settle{from{opacity:0;transform:translateY(-4px)}}
+@keyframes grow{from{transform:scaleY(0)}}
+@keyframes land{40%{transform:scaleY(1.45)}}
+@keyframes landed{0%,30%{border-right-color:var(--iris)}}
+@keyframes pop-in{from{opacity:0;transform:scale(.7)}}
+@keyframes draw{from{stroke-dashoffset:14}to{stroke-dashoffset:0}}
+@keyframes fade{from{opacity:0}}
+@keyframes bob{50%{translate:0 -3px}}
+.pend .st.ok{color:var(--iris)}
+
+/* small comforts */
+html{scrollbar-width:thin;scrollbar-color:var(--rule2) transparent}
+#compose .box{transition:border-color var(--s) var(--ease),box-shadow var(--s) var(--ease)}
+#compose .box:focus-within{box-shadow:0 10px 30px #0007,0 0 0 3px color-mix(in srgb,var(--iris) 16%,transparent)}
+#send:not([disabled]):hover{transform:translateY(-1px);box-shadow:0 6px 16px -6px var(--iris)}
+#send:not([disabled]):active{transform:scale(.96)}
+.term{transition:border-color var(--s) var(--ease),background var(--s) var(--ease)}
+.term:hover{background:color-mix(in srgb,var(--well) 80%,var(--rule))}
+.tick:focus-visible{outline-offset:1px}
+#keys dt{display:flex;gap:.25rem;align-items:center}
+#keys kbd{font:.78rem var(--mono);color:var(--ink);background:var(--well);border:1px solid var(--rule2);border-bottom-width:2px;border-radius:4px;padding:.05rem .4rem}
+/* frost on/off: a circle wipes out from the snowflake button (view transitions; plain swap elsewhere) */
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+.swapping *,.swapping *::before,.swapping *::after{transition:none!important}
+
+/* ---- frost, deeper: drifting snow (canvas) and fog behind real frosted glass.
+   Glass panels get the site's top sheen; wells and code blocks frost the snow that drifts behind them. */
+#snow{display:none;position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+[data-theme=frost] #snow{display:block}
+main{position:relative;z-index:1}
+[data-theme=frost] body:before{content:"";position:fixed;inset:-25%;z-index:0;pointer-events:none;
+ background:radial-gradient(32% 28% at 28% 30%,var(--fog),transparent 70%),radial-gradient(30% 26% at 74% 68%,var(--fog),transparent 70%)}
+@media(prefers-reduced-motion:no-preference){[data-theme=frost] body:before{animation:fogdrift 70s ease-in-out infinite alternate}}
+@keyframes fogdrift{to{transform:translate(9%,-6%) scale(1.12)}}
+#compose .box,.card{position:relative} /* (header is sticky, #jump fixed: both already anchor the sheen) */
+[data-theme=frost] :is(header,#compose .box,.card,#jump):before{content:"";position:absolute;inset:0 0 auto;height:46%;border-radius:inherit;
+ background:linear-gradient(var(--glass-hi),transparent);opacity:.35;pointer-events:none;mix-blend-mode:screen}
+[data-theme=frost] #compose .box{-webkit-backdrop-filter:blur(24px) saturate(1.2);backdrop-filter:blur(24px) saturate(1.2);
+ box-shadow:0 26px 60px -24px var(--glass-sh),0 1px 0 0 var(--glass-hi) inset,0 0 0 1px rgba(255,255,255,.03) inset}
+[data-theme=frost] #compose .box:focus-within{border-color:color-mix(in srgb,var(--iris) 45%,var(--glass-bd));
+ box-shadow:0 26px 60px -24px var(--glass-sh),0 1px 0 0 var(--glass-hi) inset,0 0 0 3px color-mix(in srgb,var(--iris) 14%,transparent)}
+[data-theme=frost] :is(.term,.md pre.mdpre){background:color-mix(in srgb,var(--well) 70%,transparent);border:1px solid var(--rule);
+ box-shadow:0 1px 0 0 color-mix(in srgb,var(--glass-hi) 50%,transparent) inset;-webkit-backdrop-filter:blur(10px) saturate(1.1);backdrop-filter:blur(10px) saturate(1.1)}
+[data-theme=frost] .term.failed{border-left:2px solid var(--bad)}
+[data-theme=frost] .term:hover{background:color-mix(in srgb,var(--well) 55%,var(--glass))}
+[data-theme=frost] .md code{background:color-mix(in srgb,var(--well) 70%,transparent);border:1px solid var(--rule)}
+[data-theme=frost] .gut{border-right-color:color-mix(in srgb,var(--rail,var(--rule2)) 80%,transparent)}
+[data-theme=frost] .in .bd{text-shadow:0 1px 12px color-mix(in srgb,var(--ground) 60%,transparent)}
+[data-theme=frost] #state:before{box-shadow:0 0 6px currentColor}
+[data-theme=frost] #send{box-shadow:0 1px 0 0 rgba(255,255,255,.35) inset}
+[data-theme=frost] :is(#find,#steps,#theme):hover{background:var(--glass);border-color:var(--glass-bd)}
+@media(prefers-color-scheme:light){[data-theme=frost] .in .bd{text-shadow:none}}
+
+/* ---- queue: messages waiting for the agent, stacked above the box */
+#queue{max-width:calc(var(--w) - 2rem - var(--gut) - 1rem);margin:0 auto .4rem;transform:translateX(calc((var(--gut) + 1rem) / 2));display:grid;gap:.3rem}
+.qi{display:flex;align-items:center;gap:.6rem;min-width:0;background:var(--panel);border:1px solid var(--rule2);border-radius:8px;
+ padding:.25rem .3rem .25rem .7rem;font-size:.86rem;box-shadow:0 8px 20px -12px #000a}
+.qi .qk{flex:0 0 auto;font:600 .68rem var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--amber)}
+.qi .qk.dim{color:var(--faint);text-transform:none;letter-spacing:0;font-weight:400}
+.qi .qt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--you-ink)}
+.qb{flex:0 0 auto;background:none;border:0;border-radius:5px;color:var(--faint);font:.76rem var(--sans);padding:.2rem .45rem;cursor:pointer;
+ transition:color var(--q) var(--ease),background var(--q) var(--ease)}
+.qb:hover{color:var(--ink);background:var(--rule)}
+.qi.srv{border-style:dashed;padding-right:.7rem;box-shadow:none}.qi.srv .qt{color:var(--dim,var(--faint))}
+.qi.failed{border-color:color-mix(in srgb,var(--bad) 55%,var(--rule2))}.qi.failed .qk{color:var(--bad)}
+@media(prefers-reduced-motion:no-preference){.qi{animation:enter .32s var(--spring) both}}
+body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
+[data-theme=frost] .qi{background:var(--glass);border-color:var(--glass-bd);border-radius:12px;
+ box-shadow:0 14px 34px -20px var(--glass-sh),0 1px 0 0 var(--glass-hi) inset;-webkit-backdrop-filter:blur(16px) saturate(1.15);backdrop-filter:blur(16px) saturate(1.15)}
+@media(max-width:700px){#queue{transform:none;max-width:none}}
+
+/* ---- shelf: a paperback under a reading lamp. Tan laid paper (faint chain lines, edges a shade darker), brown
+   ink, everything worth reading set in a Bookerly-style serif with Kindle's leading; justified replies.
+   Light only, like sepia mode on a reader. The fox becomes a burnt-sienna leather bookmark of a tail. */
+:root[data-theme=shelf]{color-scheme:light;
+ --serif:Bookerly,Literata,Charter,"Iowan Old Style",Georgia,serif;
+ --ground:#efe2c6;--panel:#f6ecd6;--well:#e6d5b2;--rule:#dcc9a4;--rule2:#c9b28a;
+ --ink:#4a3727;--dim:#654f39;--faint:#6e5741;
+ --iris:#6b4420;--amber:#7c510a;--you:#705a45;--you-ink:#3f3024;--bad:#9a3324;--add:#486326;--del:#9a3324;--hunk:#34557a;--term:#43321f;
+ --hk:#7b3a16;--code:#5a371a;--lamp:rgba(255,248,230,.55);--edge:rgba(120,82,40,.16);--sh:rgba(74,48,22,.32);
+ --tint:#000;--gleam:#f6ecd6;--press:rgba(90,60,25,.12);--hi:rgba(255,255,255,.6);--scrim:rgba(60,40,20,.35);--chain:rgba(120,82,40,.035);--laid:rgba(120,82,40,.022);
+ --fox:#a8642a;--fox-shade:#7e4520;--fox-tip:#fbf3e2;--fox-rim:#7e4520}
+/* shelf-dark: the same book at night, dark sepia under a lamp. Brown-black paper (never gray, never #000),
+   parchment ink, copper and muted amber for oko and its work. All the rules are shared via [data-theme^=shelf]. */
+:root[data-theme=shelf-dark]{color-scheme:dark;
+ --serif:Bookerly,Literata,Charter,"Iowan Old Style",Georgia,serif;
+ --ground:#1e1712;--panel:#2a211a;--well:#161009;--rule:#382c21;--rule2:#4b3b2c;
+ --ink:#dacaac;--dim:#b8a587;--faint:#9a876d;
+ --iris:#d39a62;--amber:#d4a858;--you:#bba98f;--you-ink:#e6d9c2;--bad:#e5876f;--add:#b1bf82;--del:#e5876f;--hunk:#a4b9cf;--term:#d4c4a6;
+ --hk:#e09f74;--code:#e9c99c;--lamp:rgba(255,196,120,.055);--edge:rgba(0,0,0,.38);--sh:rgba(0,0,0,.55);
+ --tint:#fff6e6;--gleam:#fff3dc;--press:rgba(0,0,0,.4);--hi:rgba(255,236,200,.06);--scrim:rgba(10,6,3,.6);--chain:rgba(240,210,160,.022);--laid:rgba(240,210,160,.014);
+ --fox:#cf7a36;--fox-shade:#a1561f;--fox-tip:#f1e2c4;--fox-rim:none}
+[data-theme^=shelf] body{min-height:100vh;background:
+  radial-gradient(120% 90% at 50% 38%,var(--lamp),transparent 62%),
+  radial-gradient(150% 130% at 50% 50%,transparent 58%,var(--edge)),
+  repeating-linear-gradient(90deg,transparent 0 2.6rem,var(--chain) 2.6rem calc(2.6rem + 1px)),
+  repeating-linear-gradient(0deg,transparent 0 2px,var(--laid) 2px 3px),var(--ground);
+ background-attachment:fixed}
+/* shelf-dark's ground: the open book is the right-hand page, the lamp over your right shoulder. Two fixed layers
+   (never repainted on scroll, unlike background-attachment:fixed on body): the paper itself (fibre grain, the page
+   curving softly down into the binding on the left, the room falling off into dark), and the lamp's warm pool, which
+   breathes very slowly. The composer's backdrop is the same paper (see below), so nothing cuts the texture off. */
+:root[data-theme=shelf-dark]{--paper:
+  radial-gradient(clamp(6rem,10vw,13rem) 80% at 0 50%,rgba(6,3,1,.26),rgba(6,3,1,.215) 10%,rgba(6,3,1,.165) 22%,rgba(6,3,1,.12) 34%,
+   rgba(6,3,1,.08) 46%,rgba(6,3,1,.048) 58%,rgba(6,3,1,.025) 70%,rgba(6,3,1,.01) 83%,transparent),
+  radial-gradient(140% 120% at 60% 22%,transparent 48%,rgba(5,3,1,.5)),
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.025 .5' numOctaves='2' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .95 0 0 0 0 .82 0 0 0 0 .62 2.6 0 0 0 -1.5'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.035'/%3E%3C/svg%3E"),
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .96 0 0 0 0 .84 0 0 0 0 .66 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 .2 .55'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.09'/%3E%3C/svg%3E")}
+:root[data-theme=shelf-dark] body{background:var(--ground)}
+[data-theme=shelf-dark] body:before,[data-theme=shelf-dark] body:after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none}
+[data-theme=shelf-dark] body:before{background:var(--paper)}
+[data-theme=shelf-dark] body:after{will-change:opacity;background:
+  radial-gradient(66% 58% at 64% 20%,rgba(255,186,106,.105),rgba(255,170,90,.04) 46%,transparent 74%),
+  radial-gradient(30% 26% at 67% 13%,rgba(255,214,150,.045),transparent 70%)}
+@media(prefers-reduced-motion:no-preference){[data-theme=shelf-dark] body:after{animation:lamp 13s ease-in-out infinite}}
+@keyframes lamp{0%,100%{opacity:1}23%{opacity:.9}31%{opacity:.97}58%{opacity:.86}71%{opacity:.95}86%{opacity:.91}}
+[data-theme^=shelf] ::selection{background:color-mix(in srgb,var(--amber) 24%,transparent)}
+html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--rule)) transparent}
+/* chrome stays a quiet humanist sans (like the reader's own menus); the book is the serif */
+[data-theme^=shelf] header{background:color-mix(in srgb,var(--ground) 90%,transparent);border-bottom:1px solid var(--rule)}
+[data-theme^=shelf] #mark{font-weight:500;font-style:italic;letter-spacing:0}
+[data-theme^=shelf] .gut{font-family:var(--serif);font-size:.76rem;font-variant-numeric:oldstyle-nums tabular-nums}
+[data-theme^=shelf] .who{font:italic 400 .88rem var(--serif);color:var(--dim)}
+[data-theme^=shelf] .oko{--rail:color-mix(in srgb,var(--iris) 38%,var(--rule))}
+[data-theme^=shelf] .oko .who{color:var(--iris)}
+[data-theme^=shelf] .in{--rail:color-mix(in srgb,var(--you) 55%,var(--rule))}
+[data-theme^=shelf] .in .who{color:var(--you)}
+[data-theme^=shelf] .in .bd{font:1.04rem/1.7 var(--serif);color:var(--you-ink)}
+[data-theme^=shelf] .reply{font:1.12rem/1.74 var(--serif);max-width:64ch;color:var(--ink);font-variant-numeric:oldstyle-nums;
+ text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+[data-theme^=shelf] .reply :is(pre,table,li,h3,h4,h5,h6){text-align:left}
+[data-theme^=shelf] .md :is(strong,h3,h4,h5,h6){color:color-mix(in srgb,var(--ink) 80%,var(--tint))}
+[data-theme^=shelf] .think{font-family:var(--serif);font-size:.92rem;line-height:1.6;border-left-color:var(--rule2)}
+[data-theme^=shelf] .day .bd{font:italic 400 1rem var(--serif);color:var(--dim)}
+[data-theme^=shelf] .day .bd:after{border-top-color:var(--rule2)}
+[data-theme^=shelf] #empty{font-family:var(--serif)}
+/* wells are the page pressed a little deeper; code keeps its monospace */
+[data-theme^=shelf] :is(.term,.md pre.mdpre){background:var(--well);border:1px solid color-mix(in srgb,var(--rule2) 60%,transparent);border-radius:3px;
+ box-shadow:inset 0 1px 2px var(--press)}
+[data-theme^=shelf] .term.failed{border-left:2px solid var(--bad)}
+[data-theme^=shelf] .term:hover{background:color-mix(in srgb,var(--well) 85%,var(--rule2))}
+[data-theme^=shelf] .out{border-top-color:var(--rule2)}
+[data-theme^=shelf] .md code{background:color-mix(in srgb,var(--well) 70%,transparent);color:var(--code);border-radius:2px}
+[data-theme^=shelf] .md a{text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,var(--iris) 45%,transparent)}
+[data-theme^=shelf] .md blockquote{font-style:italic;border-left-color:var(--rule2)}
+[data-theme^=shelf] .hk{color:var(--hk)}[data-theme^=shelf] .hs{color:var(--add)}[data-theme^=shelf] .hn{color:var(--hunk)}
+[data-theme^=shelf] .tick.ok{background:color-mix(in srgb,var(--iris) 55%,var(--ground))}
+[data-theme^=shelf] .tick.go{background:var(--amber)}
+[data-theme^=shelf] .row.hit>.bd{background:linear-gradient(90deg,color-mix(in srgb,var(--amber) 12%,transparent),transparent 60%)}
+[data-theme^=shelf] .row.hit.now>.bd{background:linear-gradient(90deg,color-mix(in srgb,var(--amber) 22%,transparent),transparent 70%)}
+[data-theme^=shelf] .shimmer{background-image:linear-gradient(100deg,currentColor 38%,color-mix(in srgb,currentColor 35%,var(--gleam)) 50%,currentColor 62%)}
+/* things laid on the page: a lighter slip with a soft brown shadow, never a gray one */
+[data-theme^=shelf] #compose{background:linear-gradient(transparent,color-mix(in srgb,var(--ground) 94%,transparent) 1.2rem)}
+/* at night the composer sits on a cut-out of the same paper (pinned to the viewport like the page), fading in at its
+   top edge so the log slips under it without a flat band. iOS Safari ignores background-attachment:fixed,
+   so there the vignette/fold may not line up exactly; fine, the grain and color still match. */
+:root[data-theme=shelf-dark] #compose{background:none}
+[data-theme=shelf-dark] #compose:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+ background:var(--paper),var(--ground);background-attachment:fixed;
+ -webkit-mask-image:linear-gradient(transparent,#000 2.4rem);mask-image:linear-gradient(transparent,#000 2.4rem)}
+[data-theme^=shelf] :is(#compose .box,#sesslist,#slash,#jump,.card,.qi){background:var(--panel);border-color:var(--rule2)}
+[data-theme^=shelf] #compose .box{box-shadow:0 14px 30px -18px var(--sh),0 1px 0 var(--hi) inset}
+[data-theme^=shelf] #compose .box:focus-within{border-color:color-mix(in srgb,var(--iris) 50%,var(--rule2));
+ box-shadow:0 14px 30px -18px var(--sh),0 0 0 3px color-mix(in srgb,var(--iris) 12%,transparent)}
+[data-theme^=shelf] #msg{font-family:var(--serif);font-size:1.04rem}
+[data-theme^=shelf] :is(#sesslist,#slash){box-shadow:0 18px 40px -20px var(--sh)}
+[data-theme^=shelf] #jump{box-shadow:0 8px 20px -10px var(--sh)}
+[data-theme^=shelf] .qi{box-shadow:0 8px 18px -14px var(--sh)}
+[data-theme^=shelf] :is(.so[aria-selected=true],.so:hover,.opt[aria-selected=true]){background:color-mix(in srgb,var(--rule) 70%,var(--panel))}
+[data-theme^=shelf] .card code{color:var(--code)}
+[data-theme^=shelf] :is(#keys,#ctxp){background:var(--scrim)}
+[data-theme^=shelf] #send{background:var(--iris);color:var(--panel)}
+[data-theme^=shelf] #send:hover{background:color-mix(in srgb,var(--iris) 85%,var(--tint))}
+[data-theme^=shelf] #send:not([disabled]):hover{box-shadow:0 6px 14px -6px var(--sh)}
+[data-theme^=shelf] :is(#find,#steps,#theme,#sess):hover{background:color-mix(in srgb,var(--rule) 60%,transparent)}
+[data-theme^=shelf] .thumb button{background:rgba(60,40,20,.7);color:#f6ecd6}
+@media(max-width:700px){[data-theme^=shelf] .reply{text-align:left}}
+/* the inline logo's own <style> sets these on .fox itself, so :root alone can't reach them: take the theme's */
+[data-theme^=shelf] #mark .fox{--fox-shade:inherit;--fox-tip:inherit;--fox-rim:inherit}
+[data-theme^=shelf] .md table{font:.92em/1.5 var(--serif);font-variant-numeric:lining-nums tabular-nums}
+[data-theme^=shelf] .md th{background:color-mix(in srgb,var(--well) 55%,transparent)}
+[data-theme^=shelf] :is(.card h4,#keys h2){font-family:var(--serif)}
+
+/* oko's tail on light grounds: a soft shadow under the fox so its pale tip doesn't vanish into paper or snow-light */
+[data-theme=shelf] :is(.wisp,#mark svg){filter:drop-shadow(0 1px 1.2px rgba(60,35,15,.45)) drop-shadow(0 0 .5px rgba(60,35,15,.35))}
+@media(prefers-color-scheme:light){[data-theme=frost] :is(.wisp,#mark svg){filter:drop-shadow(0 1px 1.2px rgba(25,30,45,.4))}}

@@ -1,0 +1,23 @@
+# oko's tail as a systemd --user unit. Copy to ~/.config/systemd/user/, fix the path, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now oko-tail
+# Run it as the same user as hermes: it reads $HERMES_HOME/state.db and $HERMES_HOME/.env.
+[Unit]
+Description=oko's tail (live hermes agent viewer)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/oko-tail/oko-tail.py --serve 9120
+# Environment=HERMES_HOME=%h/.hermes
+# Environment=OKO_TAIL_AGENT=my-agent
+# your DM's key: sqlite3 "$HERMES_HOME/state.db" 'select distinct session_key from gateway_routing'
+# Environment=OKO_TAIL_MAIN_ROUTE=agent:main:telegram:dm:12345
+# Environment=OKO_TAIL_OWNER=12345=Me
+# login (README, Security): forward auth from your proxy, or basic auth with the password in a file
+# Environment=OKO_TAIL_AUTH_HEADER=X-Authentik-Username
+# Environment=OKO_TAIL_USER=me
+# Environment=OKO_TAIL_PASSWORD_FILE=%h/.config/oko-tail/password
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

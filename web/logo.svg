@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="oko" viewBox="0 0 64 64" role="img" aria-labelledby="oko-t">
+  <title id="oko-t">oko's tail</title>
+  <style>
+    .oko{--oko-fur:#f28c2e;--oko-shade:#d7611f;--oko-tip:#fbeed5;--oko-rim:none}
+    @media (prefers-color-scheme:light){.oko{--oko-fur:#ee7f22;--oko-shade:#cc5a1c;--oko-tip:#fff9ec;--oko-rim:#c98a52}}
+    .oko .fur{fill:var(--fox,var(--oko-fur))}
+    .oko .shade{fill:var(--fox-shade,var(--oko-shade))}
+    .oko .tip{fill:var(--fox-tip,var(--oko-tip))}
+    .oko .rim{fill:none;stroke:var(--fox-rim,var(--oko-rim));stroke-width:1.4;stroke-linejoin:round}
+  </style>
+  <defs>
+    <clipPath id="oko-clip"><path d="M5.1 15.5C13.6 18.8 23 22.1 28.6 30.5C34.3 38.1 35.2 48.4 33.3 56.9C34.3 60.6 39 62 42.7 60.1C49.3 56.9 56.8 51.2 55.9 41.8L50.3 40.9C53.1 35.2 52.1 27.7 47.4 20.2L41.8 23C40.9 15.5 36.2 10.8 28.6 8L30.5 12.7C23.9 7.5 14.5 10.8 5.1 15.5Z"/></clipPath>
+    <clipPath id="oko-tipclip"><path d="M-5.2 -3.3L28.6 -3.3L26.3 8L20.2 12.7L23.9 17.4L17.4 21.1L20.2 26.8L-5.2 27.7Z"/></clipPath>
+  </defs>
+  <g clip-path="url(#oko-clip)">
+    <rect class="fur" width="64" height="64"/>
+    <path class="shade" d="M7 16.4C14.5 19.3 25.8 21.1 33.3 31.5C39.9 40.9 39.9 50.3 38 61.6L-5.2 61.6L-5.2 16.4Z"/>
+    <path class="tip" d="M-5.2 -3.3L28.6 -3.3L26.3 8L20.2 12.7L23.9 17.4L17.4 21.1L20.2 26.8L-5.2 27.7Z"/>
+  </g>
+  <g clip-path="url(#oko-tipclip)"><path class="rim" d="M5.1 15.5C13.6 18.8 23 22.1 28.6 30.5C34.3 38.1 35.2 48.4 33.3 56.9C34.3 60.6 39 62 42.7 60.1C49.3 56.9 56.8 51.2 55.9 41.8L50.3 40.9C53.1 35.2 52.1 27.7 47.4 20.2L41.8 23C40.9 15.5 36.2 10.8 28.6 8L30.5 12.7C23.9 7.5 14.5 10.8 5.1 15.5Z"/></g>
+</svg>
