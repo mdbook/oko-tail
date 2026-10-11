@@ -21,11 +21,12 @@
   <span id=state role=status aria-live=polite>connecting</span>
   <span class=grow></span>
   <button id=stats type=button aria-haspopup=dialog title="Where the context goes (t)"></button>
+  <button id=browse type=button title="Memory, skills, cron, and writes waiting on you (b)" aria-label="What __AGENT__ keeps" aria-haspopup=dialog><svg viewBox="0 0 16 16" aria-hidden=true><path d="M2.5 3.5h4l1.5 1.5h5.5v7.5h-11ZM2.5 7h11"/></svg></button>
   <button id=find type=button title="Search this session (/)" aria-label="Search"><svg viewBox="0 0 16 16" aria-hidden=true><circle cx=7 cy=7 r=4.6 /><path d="M10.4 10.4 14 14"/></svg></button>
   <button id=theme type=button data-next=frost title="Theme: default. Switch to frost (f)" aria-label="Theme: default"><svg class=i-frost viewBox="0 0 16 16" aria-hidden=true><path d="M8 1.5v13M2.4 4.75l11.2 6.5M2.4 11.25l11.2-6.5M6.3 2.6 8 4.2l1.7-1.6M6.3 13.4 8 11.8l1.7 1.6"/></svg><svg class=i-shelf viewBox="0 0 16 16" aria-hidden=true><path d="M8 4.2C6.6 3.1 4.5 2.6 1.8 2.7v9.6c2.7-.1 4.8.4 6.2 1.5 1.4-1.1 3.5-1.6 6.2-1.5V2.7C11.5 2.6 9.4 3.1 8 4.2v9.6"/></svg><svg class=i-shelf-dark viewBox="0 0 16 16" aria-hidden=true><path d="M8 1.6c1.4 1.5 1.7 2.7.9 3.7a1.1 1.1 0 0 1-1.8 0C6.3 4.3 6.6 3.1 8 1.6ZM6.3 7.4h3.4v6.4H6.3ZM4.2 13.8h7.6"/></svg><svg class=i-default viewBox="0 0 16 16" aria-hidden=true><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8Z"/></svg></button>
   <button id=steps type=button aria-pressed=false title="Show or hide tool steps in every turn (s)">Hide steps</button>
  </div>
- <form id=search hidden role=search><input id=q type=search placeholder="Search everything __AGENT__ has said or run in this session" autocomplete=off spellcheck=false><span id=qn></span><button type=button id=qx aria-label="Close search">Esc</button></form>
+ <form id=search hidden role=search><input id=q type=search placeholder="Search everything __AGENT__ has said or run in this session" autocomplete=off spellcheck=false><span id=qn></span><button type=button id=qall title="Search every session (Enter, when nothing here matches)">all sessions</button><button type=button id=qx aria-label="Close search">Esc</button></form>
  <div id=hits hidden></div>
 </header>
 <main>
@@ -38,6 +39,7 @@
  <div id=slash role=listbox hidden></div>
  <div id=thumbs hidden></div>
  <div id=queue hidden aria-live=polite aria-label="Queued messages"></div>
+ <div id=appr hidden role=group aria-label="Answer an approval prompt"><span>If __AGENT__ is asking to run a command:</span><button type=button data-cmd="approve">Approve</button><button type=button data-cmd="approve session">For this session</button><button type=button data-cmd="deny" class=no>Deny</button></div>
  <div class=box>
   <button id=attach type=button title="Attach images (or paste / drop them)" aria-label="Attach images"><svg viewBox="0 0 16 16" aria-hidden=true><path d="M10.5 4.5 5.4 9.6a1.4 1.4 0 0 0 2 2l5.3-5.3a2.8 2.8 0 0 0-4-4L3.4 7.6a4.2 4.2 0 0 0 6 6l4.1-4.1"/></svg></button>
   <input id=file type=file accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
@@ -51,8 +53,9 @@
 </form>
 <div id=keys hidden><div class=card><h2>Keyboard</h2><dl>
  <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Next / previous turn</dd><dt><kbd>s</kbd></dt><dd>Show or hide tool steps</dd>
- <dt><kbd>/</kbd></dt><dd>Search</dd><dt><kbd>f</kbd></dt><dd>Next theme (default, frost, shelf, shelf at night)</dd><dt><kbd>c</kbd></dt><dd>Write a message</dd><dt><kbd>t</kbd></dt><dd>Tokens: context, biggest items, model</dd><dt><kbd>g</kbd> / <kbd>G</kbd></dt><dd>Top / latest</dd>
+ <dt><kbd>/</kbd></dt><dd>Search</dd><dt><kbd>f</kbd></dt><dd>Next theme (default, frost, shelf, shelf at night)</dd><dt><kbd>c</kbd></dt><dd>Write a message</dd><dt><kbd>t</kbd></dt><dd>Tokens: context, biggest items, model</dd><dt><kbd>b</kbd></dt><dd>Memory, skills, cron, approvals</dd><dt><kbd>g</kbd> / <kbd>G</kbd></dt><dd>Top / latest</dd>
  <dt><kbd>Esc</kbd></dt><dd>Close, or leave the message box</dd><dt><kbd>Esc</kbd> <kbd>Esc</kbd></dt><dd>Stop the running turn</dd><dt><kbd>?</kbd></dt><dd>This list</dd></dl></div></div>
 <div id=ctxp hidden role=dialog aria-label="Context and usage"><div class=card></div></div>
+<div id=brw hidden role=dialog aria-label="What __AGENT__ keeps"><div class=card></div></div>
 <script id=cfg type="application/json">__CFG__</script>
 <script src="app.js"></script>

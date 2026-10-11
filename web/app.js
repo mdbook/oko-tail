@@ -44,10 +44,11 @@ const sessBtn=$('sess'), sessList=$('sesslist');
   const me=CFG.sessions.find(s=>s.id===cur);
   $('sessname').textContent=SINGLE?(me?name(me):cur):'All sessions';
   const items=[...CFG.sessions.map(s=>({id:s.id,name:name(s),meta:[s.source,s.last&&ago(s.last),named(s)?s.title:s.id].filter(Boolean).join(', ')})),
-               {id:'*',name:'All sessions',meta:'every session, interleaved'}];
+               {id:'*',name:'All sessions',meta:'every session, interleaved'},
+               ...(CFG.peers||[]).map(p=>({href:p.url,name:p.name,meta:'another agent, its own tail'}))]; // OKO_TAIL_PEERS
   let at=Math.max(0,items.findIndex(i=>i.id===cur));
   const opts=items.map((it,i)=>{
-    const o=el('a','so'+(it.id===cur?' on':''));o.href='?session='+encodeURIComponent(it.id);o.setAttribute('role','option');o.id='so'+i;
+    const o=el('a','so'+(it.id===cur?' on':'')+(it.href?' peer':''));o.href=it.href||'?session='+encodeURIComponent(it.id);o.setAttribute('role','option');o.id='so'+i;
     o.style.setProperty('--i',i);o.append(el('span','sn',it.name),el('span','sm',it.meta));sessList.append(o);return o;
   });
   const markS=()=>opts.forEach((o,i)=>{o.setAttribute('aria-selected',String(i===at));if(i===at)o.scrollIntoView({block:'nearest'})});
@@ -176,10 +177,10 @@ function md(src,cls){
   return root;
 }
 function text(cls,s,n){const p=el('pre',cls,s);return fold(p,s,n)}
-function diff(s,n){
+function diff(s,n,raw){ // raw: our own -/+ lines, so '---' is a removed line, not a file header
   const p=el('pre');
   s.split('\n').forEach((ln,i)=>{if(i)p.append('\n');
-    const c=/^(\+\+\+|---)/.test(ln)?'none':ln[0]==='+'?'add':ln[0]==='-'?'del':ln.startsWith('@@')?'hunk':null;
+    const c=!raw&&/^(\+\+\+|---)/.test(ln)?'none':ln[0]==='+'?'add':ln[0]==='-'?'del':!raw&&ln.startsWith('@@')?'hunk':null;
     p.append(c?el('span',c,ln):ln)});
   return fold(p,s,n);
 }
@@ -197,11 +198,53 @@ function kv(obj,skipEmpty){
   return d.childElementCount?d:null;
 }
 
+// Edits read as diffs: a line-level LCS of the old and new text (past 400x400 lines, all - then all +).
+function ldiff(a,b){
+  const x=a.split('\n'), y=b.split('\n'), n=x.length, m=y.length, out=[];
+  if(n*m>160000)return x.map(l=>'-'+l).concat(y.map(l=>'+'+l));
+  const L=Array.from({length:n+1},()=>new Uint16Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)L[i][j]=x[i]===y[j]?L[i+1][j+1]+1:Math.max(L[i+1][j],L[i][j+1]);
+  let i=0,j=0;
+  while(i<n&&j<m){if(x[i]===y[j]){out.push(' '+x[i]);i++;j++}else if(L[i+1][j]>=L[i][j+1])out.push('-'+x[i++]);else out.push('+'+y[j++])}
+  while(i<n)out.push('-'+x[i++]);while(j<m)out.push('+'+y[j++]);
+  return out;
+}
+const EXT={py:'python',js:'js',mjs:'js',ts:'ts',tsx:'ts',sh:'bash',bash:'bash',zsh:'bash',json:'json',yaml:'yaml',yml:'yaml',
+  md:'markdown',toml:'toml',sql:'sql',go:'go',rs:'rust',css:'css',html:'html',lua:'lua',txt:'text'};
+// patch / write_file / memory calls show the change itself instead of their raw arguments; false = not an edit
+function editWell(w,c,p){
+  const old=p.old_string??p.old_text, neu=p.new_string??p.new_text??p.content, used=new Set(['path','file_path','target']);
+  const path=p.path||p.file_path||(c.name==='memory'&&p.target?p.target+' memory':'');
+  let lines=null, body;
+  if(typeof p.patch==='string'){lines=p.patch.split('\n');used.add('patch')}
+  else if(c.name!=='write_file'&&typeof old==='string'&&typeof neu==='string'){lines=ldiff(old,neu);
+    for(const k of ['old_string','old_text','new_string','new_text','content'])used.add(k)}
+  else if(c.name==='memory'&&typeof neu==='string'&&p.action==='add'){lines=neu.split('\n').map(l=>'+'+l);used.add('content')}
+  if(lines){
+    const add=lines.filter(l=>l[0]==='+'&&!l.startsWith('+++')).length, del=lines.filter(l=>l[0]==='-'&&!l.startsWith('---')).length;
+    w.append(el('div','tool',c.name),el('div','dpath',path||'(no path)'));
+    w.lastChild.append(' ',el('span','add','+'+add),' ',el('span','del','−'+del));
+    body=diff(lines.join('\n'),16,typeof p.patch!=='string');
+  }else if(c.name==='write_file'&&typeof p.content==='string'){
+    used.add('content');
+    const ext=(path.match(/\.([A-Za-z0-9]+)$/)||[])[1], src=p.content;
+    w.append(el('div','tool','write_file'),el('div','dpath',path||'(no path)'));
+    const nl=nlines(src.replace(/\n$/,''));w.lastChild.append(' ',el('span','add',nl+(nl>1?' lines':' line')));
+    body=fold(hl(el('pre'),src,EXT[(ext||'').toLowerCase()]||''),src,16);
+  }else return false;
+  w.append(body);
+  const rest={};for(const [k,v] of Object.entries(p))if(!used.has(k))rest[k]=v;
+  const extra=kv(rest,true);if(extra)w.append(extra);
+  w._copy.push(c.name+' '+JSON.stringify(p,null,2));
+  return true;
+}
+
 // A tool call opens a well; its result is dropped into the same well when the tool row arrives.
 function callWell(c){
   const w=el('div','term'), p=c.params;
   w._name=c.name;w._copy=[];
-  if(isObj(p)&&typeof p.command==='string'){
+  if(isObj(p)&&editWell(w,c,p))w._edit=true;
+  else if(isObj(p)&&typeof p.command==='string'){
     const cmd=el('pre','cmd');
     p.command.split('\n').forEach((ln,i)=>{if(i)cmd.append('\n');cmd.append(el('span','ps',i?'> ':'$ '),ln)});
     w.append(fold(cmd,p.command,8));w._copy.push(p.command);
@@ -218,13 +261,13 @@ function callWell(c){
 }
 const PRIMARY=['output','content','diff','stdout','text','result','message'];
 // -> [node, failed, plain text for copy/search]
-function result(m,callTs){
+function result(m,callTs,edit){ // edit: the call already shows the change, so a diff result just says it applied
   const out=el('div','out'), meta=el('div','meta'), r=m.result;let failed=false,plain='';
   if(isObj(r)){
     const rest={...r};
     const k=PRIMARY.find(k=>typeof r[k]==='string');
     if(k){delete rest[k];plain=r[k];
-      out.append(r[k]?(k==='diff'?diff(r[k],16):text(null,r[k],14)):el('div','none','(no output)'))}
+      out.append(r[k]?(k==='diff'?(edit?el('div','none','applied'):diff(r[k],16)):text(null,r[k],14)):el('div','none','(no output)'))}
     else if(Array.isArray(r.matches)&&r.matches.every(x=>isObj(x)&&x.path)){
       delete rest.matches;
       const s=r.matches.map(x=>x.path+(x.line!=null?':'+x.line:'')+(x.content!=null?': '+x.content:'')).join('\n');
@@ -261,8 +304,39 @@ function newTurn(m,frag,orphan){
   const t={session:m.session,rows:[],ticks:[],start:m.ts,end:m.ts,folded:hideSteps||booting,orphan,el:r};
   t.tape=el('div','tape');t.sum=el('span','sum');t.btn=el('button','tgl');t.btn.type='button';
   t.btn.onclick=()=>keepView(()=>setFold(t,!t.folded,true));
-  bd.append(t.tape,t.sum,t.btn);r.append(g,bd);r._turn=t;frag.append(r);
+  const acts=el('span','tacts');
+  if(!orphan)acts.append(tBtn('link','Copy a link straight to this turn',async()=>{await clip(permalink(t.session,m.id));return 'link copied'}));
+  acts.append(tBtn('copy md','Copy this turn as markdown',async()=>{await clip(turnMd(t));return 'copied'}),
+              tBtn('save .md','Download this turn as a markdown file',()=>{saveMd(t);return 'saved'}));
+  bd.append(t.tape,t.sum,t.btn,acts);r.append(g,bd);r._turn=t;frag.append(r);
   curTurn.set(m.session,t);turns.push(t);sumUp(t);return t;
+}
+// ---- links + export: a permalink is ?session=<id>#m<message id>; a turn exports as markdown (what was said and
+// which tools ran; tool output and thinking stay out, they're what makes a transcript unreadable)
+const permalink=(s,id)=>location.origin+location.pathname+'?session='+encodeURIComponent(s)+'#m'+id;
+const clip=s=>navigator.clipboard.writeText(s);
+function tBtn(label,title,fn){
+  const b=el('button','tgl ta',label);b.type='button';b.title=title;
+  b.onclick=async e=>{e.stopPropagation();clearTimeout(b._t);
+    try{b.textContent=await fn()}catch(_){b.textContent='can\'t copy here'}
+    b._t=setTimeout(()=>{b.textContent=label},1600)};
+  return b;
+}
+function turnMd(t){
+  const out=[], h=t.head&&t.head._m, when=ts=>dayLabel(ts)+', '+hhmm(ts);
+  if(h)out.push('## '+t.head._who+' · '+when(h.ts),'',t.head._text);
+  for(const r of t.rows){
+    const m=r._m;if(!m)continue;
+    if(m.role==='assistant'){
+      if(m.content)out.push('','## '+AG+' · '+when(m.ts),'',m.content);
+      for(const c of m.tool_calls){const a=c.params?JSON.stringify(c.params):c.args||'';out.push('','- ran `'+c.name+'`'+(a?' '+(a.length>200?a.slice(0,200)+'…':a):''))}
+    }else if(m.kind&&m.content)out.push('','> '+m.kind.replace(/_/g,' ')+': '+m.content.split('\n').join('\n> '));
+  }
+  return out.join('\n').trim()+'\n';
+}
+function saveMd(t){
+  const a=el('a'), u=URL.createObjectURL(new Blob([turnMd(t)],{type:'text/markdown'}));
+  a.href=u;a.download=AG+'-'+(t.head?t.head._m.id:t.start)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);
 }
 function place(frag,r,m,step){
   const t=curTurn.get(m.session)||newTurn(m,frag,true);
@@ -277,6 +351,8 @@ function sumUp(t){
   const n=t.ticks.length, f=t.ticks.filter(k=>k._fail).length, steps=t.rows.filter(r=>r.classList.contains('step')).length;
   t.sum.replaceChildren((t.orphan?'continued, ':'')+(n?n+(n>1?' tool calls':' tool call'):'no tool calls')+(t.end-t.start>=1?', '+took(t.end-t.start):''));
   if(f)t.sum.append(', ',el('span','bad',f+' failed'));
+  const slow=t.ticks.reduce((a,k)=>k._secs>(a?a._secs:0)?k:a,null); // only worth naming when one call dominated
+  if(n>1&&slow&&slow._secs>=10)t.sum.append(', slowest '+slow._name+' '+took(slow._secs));
   t.btn.hidden=!steps;
   t.btn.textContent=t.folded?'Show '+steps+(steps>1?' steps':' step'):'Hide steps';
   t.el.hidden=!n&&!steps;
@@ -292,7 +368,8 @@ function addTick(t,w){
 }
 function settleTick(w,secs,failed){
   const k=w._tick;if(!k)return;
-  k.classList.remove('go');k.classList.add(failed?'fail':'ok');k._fail=failed;
+  k.classList.remove('go');k.classList.add(failed?'fail':'ok');k._fail=failed;k._secs=secs;k._name=w._name||'tool';
+  if(w._turn)dirty.add(w._turn);
   k.style.setProperty('--d',Math.min(1,Math.log10(1+Math.max(0,secs))/2.3).toFixed(3)); // 1s low, 10s mid, 3min full
   k.title=(w._name||'tool')+', '+took(secs)+(failed?', failed':'');k.setAttribute('aria-label',k.title);
   if(failed)w.classList.add('failed');
@@ -324,6 +401,7 @@ function row(m,who,cls){
   if(!SINGLE)r.style.setProperty('--rail','hsl('+hue(m.session)+' 32% 42%)');
   if(who!==lastWho)g.append(el('span','who',who));
   g.append(el('span',null,hhmm(m.ts)));g.title=hhmmss(m.ts)+', '+dayLabel(m.ts);
+  r.dataset.mid=m.id;r._m=m;
   lastWho=who;r.append(g,bd);return [r,bd];
 }
 // Inbound rows hermes writes as role=user that no person typed: name the source instead of "zulip".
@@ -355,7 +433,12 @@ function build(m,frag){
     if(m.content)bd.append(fold(md(m.content),m.content,8));
     else bd.append(el('div','kd',m.kind==='hidden'?'No text recorded. The reply never finished.':'(no text)'));
     r._q=(label+' '+(m.content||'')).toLowerCase();
-    place(frag,r,m,false);return;
+    place(frag,r,m,false);
+    if(SINGLE&&(m.kind==='failed_turn'||m.kind==='hidden')){const t=r._turn, b=el('button','tgl retry','retry');b.type='button';
+      b.title='The newest turn: run it again (/retry). An older one: put its message back in the box';
+      b.onclick=()=>{if(t===turns[turns.length-1]){msgBox.value='/retry';compose.requestSubmit()}else if(t.head)editInto(t.head._text)};
+      bd.append(b)}
+    return;
   }
   if(m.role==='user'){
     pending.delete(m.session);curTurn.delete(m.session);
@@ -369,8 +452,10 @@ function build(m,frag){
     const [r,bd]=row(m,who,cls);lastWho=null;
     if(via)bd.append(via);
     bd.append(cpPres(fold(md(body),body,12)),cpBtn(()=>body,'Copy message'));
-    r._q=body.toLowerCase();frag.append(r);
-    r._turn=newTurn(m,frag,false);
+    if(cls==='in'&&SINGLE){const e=el('button','tgl edit','edit');e.type='button';e.title='Put this message back in the box to change and send again';
+      e.onclick=()=>editInto(body);bd.append(e)}
+    r._q=body.toLowerCase();r._who=who;r._text=body;frag.append(r);
+    r._turn=newTurn(m,frag,false);r._turn.head=r;
     if(cls!=='in')r._turn.el.style.setProperty('--rail','var(--faint)');
     if(pend&&pend.text.trim()===body.trim())clearPend(); // our message landed: drop the optimistic copy
   }else if(m.role==='assistant'){
@@ -394,7 +479,7 @@ function build(m,frag){
     const q=pending.get(m.session)||[];
     const i=q.findIndex(w=>!m.tool_name||!w._name||w._name===m.tool_name);
     if(i>=0){
-      const w=q.splice(i,1)[0], [node,failed,plain]=result(m,w._ts);
+      const w=q.splice(i,1)[0], [node,failed,plain]=result(m,w._ts,w._edit);
       w._run.remove();w.append(node);w._copy.push(plain);if(!booting)node.classList.add('enter');
       settleTick(w,m.ts-w._ts,failed);
       if(w._row){w._row._q+='\n'+plain.toLowerCase();const t=w._row._turn;if(t&&m.ts>t.end){t.end=m.ts;dirty.add(t)}}
@@ -456,6 +541,18 @@ async function earlier(){
   showJump();
 }
 more.onclick=earlier;
+// a permalink (#m<id>): the row with that id, or the one it was folded into (a tool result lives in its call's row).
+// The '*' view starts at the last turn, so it pages back until the row is loaded.
+async function seek(id){
+  if(!SINGLE)for(let n=0;n<30&&before!=null&&id<before&&!more.disabled;n++)await earlier();
+  let r=null;for(const x of log.querySelectorAll('.row[data-mid]')){if(+x.dataset.mid<=id)r=x;else break}
+  if(!r)return false;
+  if(r._turn&&r._turn.folded&&r.classList.contains('step'))setFold(r._turn,false,false);
+  log.querySelector('.linked')?.classList.remove('linked');r.classList.add('linked');
+  pinned=false;r.scrollIntoView({block:'center'});replay(r,'flash');showJump();return true;
+}
+function fromHash(){const x=/^#m(\d+)$/.exec(location.hash);if(x)seek(+x[1])}
+addEventListener('hashchange',fromHash);
 function showJump(){
   if(atBottom())unseen=0;
   jump.classList.toggle('on',!atBottom());
@@ -578,6 +675,17 @@ async function openCtx(){
     ['messages',s.message_count],['tool calls',s.tool_call_count],['API calls',s.api_call_count],['cost',s.actual_cost_usd||s.estimated_cost_usd]])
     if(v!=null)dl.append(el('dt',null,k),el('dd',null,k==='cost'?'$'+v.toFixed(2):kfmt(v)));
   tot.append(dl,el('p','dim','Lifetime throughput: every call re-sends the window, so these grow much faster than the context.'));
+  const tools=ctxSection(card,'Tools');
+  fetch(qs('tools')).then(r=>r.json()).then(j=>{
+    if(!j||!j.tools.length){tools.remove();return}
+    const t=el('table','ttools'), h=el('tr');
+    for(const c of ['tool','calls','failed','median','slowest','total'])h.append(el('th',null,c));
+    t.append(h);
+    for(const x of j.tools){const r=el('tr');
+      r.append(el('td',null,x.tool),el('td',null,String(x.n)),el('td',x.failed?'bad':null,x.failed?x.failed+' ('+Math.round(100*x.failed/x.n)+'%)':'0'),
+        el('td',null,took(x.median)),el('td',null,took(x.max)),el('td',null,took(x.total)));t.append(r)}
+    tools.append(t,el('p','dim','This session, last '+j.days+' days: time from the call to its result, slowest share of the time first.'));
+  }).catch(()=>tools.remove());
   fetch(qs('ctx')).then(r=>r.json()).then(j=>{
     if(!j){conv.remove();big.remove();return}
     const p=j.parts, parts=['summary','you','replies','tool calls','tool output'].map(n=>({name:n,tok:p[n]})).filter(x=>x.tok);
@@ -625,11 +733,91 @@ function loadModels(mod){
 }
 $('stats').onclick=openCtx;
 ctxp.onclick=e=>{if(e.target===ctxp)ctxp.hidden=true};
+// What the agent keeps between turns (its own files, read-only) + the writes it staged for your approval
+const brw=$('brw');
+let brwTab=store.get('brw','memory');
+const SECT={
+  memory:j=>j.memory.length?j.memory.map(m=>md(m,'bent')):[el('p','dim','No memory notes.')],
+  user:j=>j.user.length?j.user.map(m=>md(m,'bent')):[el('p','dim','No profile notes.')],
+  skills:j=>{const out=[];let cat=null;
+    for(const s of j.skills){
+      if(s.category!==cat){cat=s.category;out.push(el('h3',null,cat||'uncategorised'))}
+      const d=el('details','bent'), sm=el('summary');sm.append(el('b',null,s.name),el('span','dim',s.desc?' · '+s.desc:''));d.append(sm);
+      d.ontoggle=()=>{if(!d.open||d._got)return;d._got=1;
+        fetch('skill?name='+encodeURIComponent(s.name)).then(r=>r.json()).then(x=>d.append(x.text!=null?md(x.text.replace(/^---\n[\s\S]*?\n---\n/,'')):el('p','dim',x.error)))
+          .catch(e=>d.append(el('p','dim',e.message)))};
+      out.push(d)}
+    return out.length?out:[el('p','dim','No skills found on disk.')]},
+  cron:j=>j.cron.length?j.cron.map(c=>{const d=el('div','bent');
+    d.append(el('b',null,c.name||c.id),el('span','dim',' · '+(c.schedule_display||'')+(c.enabled===false?' · paused':'')+(c.state?' · '+c.state:'')));
+    const w=[];if(c.next_run_at)w.push('next '+new Date(c.next_run_at*1000||c.next_run_at).toLocaleString());
+    if(c.last_run_at)w.push('last '+new Date(c.last_run_at*1000||c.last_run_at).toLocaleString()+(c.last_status?' ('+c.last_status+')':''));
+    if(w.length)d.append(el('p','dim',w.join(' · ')));if(c.last_error)d.append(el('p','bad',c.last_error));
+    if(c.prompt)d.append(fold(el('pre','bpre',c.prompt),c.prompt,6));return d}):[el('p','dim','No cron jobs.')],
+  pending:j=>j.pending.length?j.pending.map(p=>{const d=el('div','bent');
+    d.append(el('b',null,p.subsystem+' · '+p.action),el('span','dim',' · '+(p.origin||'')+(p.ts?' · '+ago(p.ts):'')+' · '+p.id),el('p',null,p.summary));
+    const x=el('details');x.append(el('summary',null,'What it writes'),el('pre','bpre',p.detail));d.append(x);
+    if(CFG.main&&SOCK){const a=el('div','bacts');
+      for(const [v,l] of [['approve','Approve'],['reject','Reject']]){const b=el('button','chip',l);b.type='button';
+        b.onclick=async()=>{a.querySelectorAll('button').forEach(c=>c.disabled=true);
+          try{const r=await post('cmd',{session:CFG.main,name:p.subsystem,args:v+' '+p.id});a.replaceWith(el('p',r.held?'bad':'dim',said(r,p.subsystem+' '+v+' '+p.id)))}
+          catch(e){a.replaceWith(el('p','bad',e.message))}};a.append(b)}
+      d.append(a)}
+    else d.append(el('p','dim','Approve or reject from '+AG+'\'s main session: /'+p.subsystem+' approve '+p.id));
+    return d}):[el('p','dim','Nothing waiting on you.')],
+};
+async function openBrowse(){
+  const card=brw.querySelector('.card');
+  card.replaceChildren(el('h2',null,'What '+AG+' keeps'));brw.hidden=false;
+  let j;try{j=await (await fetch('browse')).json()}catch(e){card.append(el('p','bad','Could not read it: '+e.message));return}
+  if(!SOCK&&CFG.main)await loadCmds().catch(()=>{});
+  const tabs=el('div','btabs'), f=el('input'), body=el('div','bbody');
+  f.type='search';f.placeholder='Filter';f.oninput=()=>{const q=f.value.toLowerCase();for(const n of body.children)n.hidden=!!q&&n.tagName!=='H3'&&!n.textContent.toLowerCase().includes(q)};
+  card.append(tabs,f,body);
+  const show=k=>{brwTab=k;store.set('brw',k);for(const b of tabs.children)b.setAttribute('aria-pressed',String(b.dataset.k===k));body.replaceChildren(...SECT[k](j));f.oninput()};
+  for(const [k,l] of [['memory','Memory'],['user','About you'],['skills','Skills'],['cron','Cron'],['pending','Waiting on you']]){
+    const b=el('button','chip'+(k==='pending'&&j.pending.length?' hot':''),l+' '+j[k].length);b.type='button';b.dataset.k=k;b.onclick=()=>show(k);tabs.append(b)}
+  show(SECT[brwTab]?brwTab:'memory');
+}
+$('browse').onclick=openBrowse;
+brw.onclick=e=>{if(e.target===brw)brw.hidden=true};
+// A blocked shell command waits for /approve in hermes' memory, which nothing here can see: offer the answers
+// once a command-running tool has sat for a while in the main session. A wrong guess just gets "nothing to approve".
+const appr=$('appr'), SHELLY=/terminal|shell|exec|bash|command|process/i;
+function syncAppr(){
+  const now=Date.now()/1000;
+  const on=cur===CFG.main&&SOCK&&(running(live)?stageOf(live)==='tool'&&SHELLY.test(live.tool||'')&&now-(live.stage_ts||live.started)>=8
+    :!!turn&&turn.phase!=='model'&&SHELLY.test(turn.phase)&&now-turn.since_ts>=8);
+  if(appr.hidden===on)appr.hidden=!on;
+}
+// "held" = the agent queued it behind the running turn: that answer is NOT delivered, and the turn may be waiting on it
+const said=(j,what)=>j.held?'/'+what+' is queued behind the running turn, not delivered. Answer in your chat app instead.'
+  :(j.messages||[]).join('\n')||'Sent /'+what+'.';
+for(const b of appr.querySelectorAll('button'))b.onclick=async()=>{
+  const [name,...a]=b.dataset.cmd.split(' ');
+  try{const j=await post('cmd',{session:cur,name,args:a.join(' ')});cnote(said(j,b.dataset.cmd),j.held)}
+  catch(e){cnote(e.message,true)}};
 
 // ---- status line
-let baseTitle=document.title, unread=0, wasBusy=false;
-function tick(){
+let baseTitle=document.title, unread=0, wasBusy=false, conn=true;
+// The tab follows the agent while you're elsewhere: the title carries the status line, the favicon a dot
+// (amber busy, blue compacting, green unread reply, gray offline). Built from favicon.svg, no HTML parsing.
+const favLink=document.querySelector('link[rel=icon]'), DOT={busy:'#f2b33d',compact:'#6aa7ff',unread:'#4cc38a',off:'#8a8790'};
+let favSvg=null, favKey='';
+fetch('favicon.svg').then(r=>r.ok?r.text():null).then(t=>{favSvg=t;tab()}).catch(()=>{});
+function tab(){
+  const busy=conn&&!!B.dataset.phase, k=!conn||gatewayUp===false?'off':compacting?'compact':busy?'busy':unread?'unread':'';
+  const t=(unread?'● ':'')+(busy?state.textContent+' · ':'')+baseTitle;
+  if(document.title!==t)document.title=t;
+  if(favSvg==null||k===favKey||!favLink)return;
+  favKey=k;
+  favLink.href=k?'data:image/svg+xml,'+encodeURIComponent(favSvg.replace('</svg>',
+    '<circle cx="25" cy="7" r="6.5" fill="'+DOT[k]+'" stroke="#17161b" stroke-width="2"/></svg>')):'favicon.svg';
+}
+function tick(){tick1();tab()}
+function tick1(){
   if(!ok)return;
+  syncAppr();
   B.dataset.phase=compacting?'compact':running(live)?stageOf(live):turn?(turn.phase==='model'?'wait':'tool'):'';
   if(compacting){
     state.textContent='compacting context…';tailText.textContent='compacting context: earlier turns are being summarized';
@@ -648,7 +836,7 @@ setInterval(tick,1000);
 function notifyEdge(busy){
   if(wasBusy&&!busy){const r=[...log.querySelectorAll('.row.oko')].pop();if(r)replay(r,'landed')} // the turn landed
   if(wasBusy&&!busy&&document.hidden){
-    unread++;document.title='● '+baseTitle;
+    unread++;tab();
     if(window.Notification&&Notification.permission==='granted'){
       const body=lastMsg&&lastMsg.role==='assistant'&&lastMsg.content?lastMsg.content.slice(0,140):'Turn finished';
       try{new Notification(AG+' replied',{body,tag:'oko-'+cur})}catch(e){}
@@ -656,15 +844,15 @@ function notifyEdge(busy){
   }
   wasBusy=busy;
 }
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&unread){unread=0;document.title=baseTitle}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&unread){unread=0;tab()}});
 function handle(j){
-  ok=true;B.classList.add('ready');
+  ok=true;conn=true;B.classList.add('ready');
   const stick=pinned;
   compacting=!!j.compacting;
   if(!j.waiting)stoppedTurn=null;
   turn=j.waiting&&j.since_ts!==stoppedTurn?j:null; // a turn we stopped can leave the DB mid-step: it's over, not busy
   if(turn&&cur===CFG.main&&!SOCK&&Date.now()-cmdsAt>20000)loadCmds().then(syncStop); // learn whether Stop can reach it
-  if(j.title){baseTitle=AG+' · '+j.title;if(!unread)document.title=baseTitle}
+  if(j.title)baseTitle=AG+' · '+j.title;
   if('gateway' in j)setGateway(j.gateway);
   if(j.stats)renderStats(j.stats);
   append(j.rows);
@@ -672,6 +860,7 @@ function handle(j){
     booting=false;
     const last=turns[turns.length-1];if(last&&!hideSteps)setFold(last,false,false);
     toBottom();
+    if(location.hash)setTimeout(fromHash,0); // after this update's own scroll-to-bottom
   }
   renderLive('live' in j?j.live:live);
   const busy=!!j.waiting||running(live);
@@ -680,7 +869,7 @@ function handle(j){
   if(stick)toBottom();
   tick();
 }
-function lost(){B.classList.remove('live','busy','compacting');B.dataset.phase='';state.textContent=ok?'connection lost, retrying':'connecting'}
+function lost(){B.classList.remove('live','busy','compacting');B.dataset.phase='';state.textContent=ok?'connection lost, retrying':'connecting';conn=false;tab()}
 async function poll(){ // fallback when EventSource is unavailable
   let more=false;
   try{const j=await (await fetch(qs('rows?after='+after))).json();handle(j);more=j.rows.length>=200}catch(e){lost()}
@@ -847,7 +1036,7 @@ compose.onsubmit=async e=>{
   e.preventDefault();
   const text=msgBox.value.trim();
   if(!text&&!images.length)return;
-  if(gatewayUp===false&&!/^\/help\b/.test(text)){cnote(AG+' is offline, so this can\'t be sent yet. What you typed is still in the box.',true);return}
+  if(gatewayUp===false&&!/^\/(help|snip)\b/.test(text)){cnote(AG+' is offline, so this can\'t be sent yet. What you typed is still in the box.',true);return}
   closeSlash();
   if(text.startsWith('/'))await loadCmds();    // to know whether it starts a turn
   const q={text,images:images.slice()};
@@ -866,7 +1055,28 @@ compose.onsubmit=async e=>{
 $('stop').onclick=tryStop;
 
 // slash commands: the gateway's chat API takes "/x" as plain text, so the server maps each one to a real call
-const LOCAL=[{name:'help',args:'',desc:'List the commands that work here',kind:'cmd'}];
+const LOCAL=[{name:'help',args:'',desc:'List the commands that work here',kind:'cmd'},
+  {name:'snip',args:'[name text]',desc:'Your saved prompts: /snip lists them, /snip <name> <text> saves one',kind:'cmd'}];
+// snippets: saved prompts, this browser only (localStorage). They show in the / menu by name and insert their text.
+let snips=[];try{snips=JSON.parse(store.get('snips','[]')).filter(s=>s&&typeof s.name==='string'&&typeof s.text==='string')}catch(e){}
+const saveSnips=()=>store.set('snips',JSON.stringify(snips));
+function snipCmd(args){
+  const sp=args.search(/\s/), name=sp<0?args:args.slice(0,sp), text=sp<0?'':args.slice(sp+1).trim();
+  if(!name){
+    card('snip',x=>{x.append(el('h4',null,'Your snippets'));
+      if(!snips.length){x.append(el('div','d','None yet. /snip <name> <text> saves one; then type /<name> to use it.'));return}
+      const u=el('ul');
+      for(const s of snips){const li=el('li'), use=el('button','tgl','use'), del=el('button','tgl','delete');use.type=del.type='button';
+        use.onclick=()=>editInto(s.text);del.onclick=()=>{snips=snips.filter(z=>z!==s);saveSnips();li.remove()};
+        li.append(el('code',null,'/'+s.name),' ',el('span','d',s.text.length>80?s.text.slice(0,80)+'…':s.text),' ',use,' ',del);u.append(li)}
+      x.append(u)});
+    cnote('');return;
+  }
+  if(!/^[\w-]{1,32}$/.test(name))throw new Error('a snippet name is letters, digits, - or _ (up to 32)');
+  if(!text){const s=snips.find(z=>z.name===name);if(!s)throw new Error('no snippet called '+name+'. Save one: /snip '+name+' <text>');editInto(s.text);return}
+  snips=snips.filter(z=>z.name!==name).concat({name,text});saveSnips();
+  cnote('Saved. Type /'+name+' to use it.');
+}
 let CMDS=null, SOCK=false, cmdsAt=0;
 async function loadCmds(){
   // the real list comes from the agent's socket; without it we show the few REST-mapped ones and look again
@@ -886,8 +1096,9 @@ function slashUpdate(){
   const v=msgBox.value, m=/^\/([^\s]*)$/.exec(v);
   if(!m){closeSlash();return}
   const q=m[1].toLowerCase();
-  loadCmds().then(all=>{
+  loadCmds().then(cmds=>{
     if(msgBox.value!==v)return;
+    const all=[...cmds,...snips.map(s=>({name:s.name,args:'',desc:s.text.replace(/\s+/g,' '),text:s.text,kind:'snip'}))];
     const pre=c=>c.name.startsWith(q)||(c.aliases||[]).some(x=>x.toLowerCase().startsWith(q));
     const a=all.filter(pre), b=all.filter(c=>!pre(c)&&(c.name.includes(q)||(q.length>2&&c.desc.toLowerCase().includes(q))));
     opts=[...a,...b].slice(0,60);sel=0;
@@ -895,7 +1106,8 @@ function slashUpdate(){
     slash.replaceChildren();let lastKind=null;
     opts.forEach((c,i)=>{
       const grp=c.kind+(q===''&&c.category?'|'+c.category:'');   // category headers only while browsing; a search ranks by match
-      if(grp!==lastKind){lastKind=grp;slash.append(el('div','hd',c.kind==='skill'?'Skills ('+AG+' loads the skill and runs your request)':(q===''&&c.category)||'Commands'))}
+      if(grp!==lastKind){lastKind=grp;slash.append(el('div','hd',c.kind==='skill'?'Skills ('+AG+' loads the skill and runs your request)':
+        c.kind==='snip'?'Your snippets (puts the text in the box)':(q===''&&c.category)||'Commands'))}
       const o=el('div','opt'+(c.kind==='skill'?' skill':''));o.setAttribute('role','option');o.id='opt'+i;
       const n=el('span','n','/'+c.name);if(c.args)n.append(' ',el('i',null,c.args));
       o.append(n,el('span','d',c.desc),el('span','k',i===0?'Tab':''));
@@ -913,6 +1125,7 @@ function mark(){
 function closeSlash(){slash.hidden=true;opts=[];msgBox.removeAttribute('aria-activedescendant')}
 function accept(){
   const c=opts[sel];if(!c)return false;
+  if(c.kind==='snip'){closeSlash();editInto(c.text);cnote('');return false}   // a snippet goes in the box to check first
   msgBox.value='/'+c.name+(c.args?' ':'');closeSlash();msgBox.focus();
   return !c.args; // nothing more to type: Enter can send straight away
 }
@@ -940,6 +1153,11 @@ let hix=-1;
 msgBox.value=store.get(DK,'');
 msgBox.addEventListener('input',()=>{store.set(DK,msgBox.value);hix=-1});
 function remember(t){sent=sent.filter(x=>x!==t).concat(t).slice(-30);store.set(HK,JSON.stringify(sent));store.set(DK,'');hix=-1}
+function editInto(t){ // edit & resend: an earlier message back in the box (what was typed there is swapped out)
+  if(compose.hidden)return;
+  msgBox.value=t;msgBox.dispatchEvent(new Event('input'));msgBox.focus();msgBox.setSelectionRange(t.length,t.length);
+  cnote('Edit it and send. It goes as a new message.');
+}
 msgBox.addEventListener('focus',()=>{loadCmds()},{once:true});
 // a command's answer is shown here only, as a card in the log (not part of the agent's transcript)
 function card(name,fill){
@@ -975,6 +1193,7 @@ async function command(raw){
       if(n)x.append(el('div','d',n+' skills too: type / and a name.'))});
     cnote('');return;
   }
+  if(name==='snip'&&c.kind==='cmd'){snipCmd(args);return}
   cnote('/'+name+'…');
   const j=c.kind==='skill'?await post('/cmd',{session:cur,name:'skill',args:c.name+(args?' '+args:'')})
                           :await post('/cmd',{session:cur,name,args});
@@ -988,7 +1207,7 @@ async function command(raw){
     if(id){cnote('');card('fork',x=>{x.append(el('h4',null,'Forked'));const a=el('a',null,'Open the new session');a.href='?session='+encodeURIComponent(id);x.append(a)})}
     else cnote('Forked.');return;
   }
-  else if(name==='title'){cnote('Renamed to "'+args+'".');baseTitle=AG+' · '+args;document.title=baseTitle;return}
+  else if(name==='title'){cnote('Renamed to "'+args+'".');baseTitle=AG+' · '+args;tab();return}
   else if(name==='model'){cnote('This session now uses '+args+'.');return}
   else if(name==='stop'){cnote('Stopping '+AG+'…');return}
   else if(name==='steer'){cnote('Sent. '+AG+' will see it after its current tool call.');return}
@@ -999,14 +1218,37 @@ async function command(raw){
 const search=$('search'), q=$('q'), qn=$('qn');
 let hits=[], hi=-1;
 function openSearch(){search.hidden=false;q.focus();q.select()}
-function closeSearch(){search.hidden=true;q.value='';runSearch()}
+function closeSearch(){search.hidden=true;q.value='';runSearch();hitsEl.hidden=true;hitsEl.replaceChildren()}
+// every session, from the server (newest 50); a hit opens its session at that message (#m<id>)
+const hitsEl=$('hits');
+async function searchAll(){
+  const s=q.value.trim();if(s.length<2){qn.textContent='type 2 or more letters';return}
+  hitsEl.hidden=false;if(!hitsEl.childElementCount)hitsEl.append(el('div','hd','Searching every session…'));
+  let j;try{j=await (await fetch('search?q='+encodeURIComponent(s))).json()}
+  catch(e){hitsEl.replaceChildren(el('div','hd','The search failed. Try again'));return}
+  if(q.value.trim()!==s||hitsEl.hidden)return;
+  const n=j.hits.length;
+  hitsEl.replaceChildren(el('div','hd',n?(n>=50?'Newest 50 matches':n+(n>1?' matches':' match'))+' across every session':'Nothing in any session'));
+  for(const h of j.hits){
+    const a=el('a','ah'), top=el('div','am'), sn=el('div','asn'), i=h.snippet.toLowerCase().indexOf(s.toLowerCase());
+    a.href='?session='+encodeURIComponent(h.session)+'#m'+h.id;
+    const who=h.role==='assistant'?AG:h.role==='tool'?(h.tool||'tool')+' output':h.role==='user'?'message':h.role;
+    top.append(el('span','as',h.session===cur?'this session':h.title||h.session),
+               el('span',null,who+(h.where==='calls'?', tool call':h.where==='thinking'?', thinking':'')),el('span',null,ago(h.ts)));
+    if(i<0)sn.textContent=h.snippet;else sn.append(h.snippet.slice(0,i),el('mark',null,h.snippet.slice(i,i+s.length)),h.snippet.slice(i+s.length));
+    a.append(top,sn);
+    if(h.session===cur)a.onclick=e=>{e.preventDefault();history.replaceState(null,'','#m'+h.id);seek(h.id)};
+    hitsEl.append(a);
+  }
+}
+$('qall').onclick=searchAll;
 function runSearch(keep){
   const s=q.value.trim().toLowerCase(), was=hits[hi];
   for(const r of hits)r.classList.remove('hit','now');hits=[];hi=-1;
   if(s.length<2){qn.textContent='';return}
   hits=[...log.querySelectorAll('.row')].filter(r=>r._q&&r._q.includes(s));
   hits.forEach(r=>r.classList.add('hit'));
-  if(!hits.length){qn.textContent='no matches';return}
+  if(!hits.length){qn.textContent='none here, Enter looks everywhere';return}
   const i=keep&&was?hits.indexOf(was):-1;
   if(i>=0){hi=i;was.classList.add('now');qn.textContent=(hi+1)+' of '+hits.length}else goHit(hits.length-1);
 }
@@ -1017,9 +1259,9 @@ function goHit(i){
   if(r._turn&&r._turn.folded&&r.classList.contains('step'))setFold(r._turn,false,false);
   r.scrollIntoView({block:'center'});qn.textContent=(hi+1)+' of '+hits.length;
 }
-let qt;q.addEventListener('input',()=>{clearTimeout(qt);qt=setTimeout(runSearch,120)});
+let qt;q.addEventListener('input',()=>{clearTimeout(qt);qt=setTimeout(()=>{runSearch();if(!hitsEl.hidden)searchAll()},120)});
 q.onkeydown=e=>{
-  if(e.key==='Enter'){e.preventDefault();goHit(hi+(e.shiftKey?1:-1))}
+  if(e.key==='Enter'){e.preventDefault();if(!hits.length)searchAll();else goHit(hi+(e.shiftKey?1:-1))} // nothing here: look everywhere
   else if(e.key==='Escape'){e.preventDefault();closeSearch()}
 };
 search.onsubmit=e=>e.preventDefault();
@@ -1047,7 +1289,8 @@ addEventListener('keydown',e=>{
     case 'G':jump.onclick();break;
     case '?':keys.hidden=!keys.hidden;break;
     case 't':if(ctxp.hidden)openCtx();else ctxp.hidden=true;break;
-    case 'Escape':keys.hidden=true;ctxp.hidden=true;if(!search.hidden)closeSearch();break;
+    case 'b':if(brw.hidden)openBrowse();else brw.hidden=true;break;
+    case 'Escape':keys.hidden=true;ctxp.hidden=true;brw.hidden=true;if(!search.hidden)closeSearch();break;
     default:return;
   }
   e.preventDefault();

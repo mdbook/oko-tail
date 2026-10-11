@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A problem with hermes itself
+    url: https://github.com/NousResearch/hermes-agent/issues
+    about: If the agent misbehaves the same way outside oko's tail, it's a hermes issue.

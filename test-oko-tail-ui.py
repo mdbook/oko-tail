@@ -26,7 +26,15 @@ rows = [("user", t, "first question", None, None, None),
          "zebra thoughts"),
         ("user", t + 120, "[DM from helper-bot@chat.example (helper)]\nbackup job on nas is done, can you confirm the size?",
          None, None, None),
-        ("assistant", t + 125, "Confirmed: 412 GB, matches last week.", None, None, None)]
+        ("assistant", t + 125, "Confirmed: 412 GB, matches last week.", None, None, None),
+        ("user", t + 200, "fix the typo in notes", None, None, None),
+        ("assistant", t + 201, "", call("patch", {"path": "/tmp/notes.md", "old_string": "a\nteh cat\nb", "new_string": "a\nthe cat\nb"}),
+         None, None),
+        ("tool", t + 202, json.dumps({"success": True, "diff": "--- a/notes.md\n+++ b/notes.md\n-teh cat\n+the cat"}), None, "patch",
+         None),
+        ("assistant", t + 203, "", call("write_file", {"path": "/tmp/x.py", "content": "def f():\n    return 1\n"}), None, None),
+        ("tool", t + 204, json.dumps({"bytes_written": 22}), None, "write_file", None),
+        ("assistant", t + 205, "Fixed the typo.", None, None, None)]
 con.executemany("insert into messages (session_id, role, timestamp, content, tool_calls, tool_name, reasoning) values ('s',?,?,?,?,?,?)", rows)
 con.commit()
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
@@ -69,8 +77,9 @@ def fake_agent(home):
             ds = [{"type": "commands", "commands": [
                 {"name": "usage", "aliases": [], "args_hint": "", "description": "Token usage", "category": "Info"},
                 {"name": "compress", "aliases": ["compact"], "args_hint": "[focus]", "description": "Compress context", "category": "Session"},
-                {"name": "busy", "aliases": [], "args_hint": "", "description": "Held", "category": "Session"}]}]
-        elif req["text"].startswith("/busy"):
+                {"name": "busy", "aliases": [], "args_hint": "", "description": "Held", "category": "Session"},
+                {"name": "retry", "aliases": [], "args_hint": "", "description": "Retry the last message", "category": "Session"}]}]
+        elif req["text"].startswith("/busy") or req["text"] == "/deny":
             ds = [{"type": "accepted", "id": "local-1"}, {"type": "held", "id": "local-1"}]
         elif req["text"] == "/stop":
             ds = [{"type": "accepted", "id": "local-2"}, {"type": "message", "id": "local-2:1", "text": "Stopped."}]
@@ -115,19 +124,49 @@ try:
         assert not ev("document.documentElement.dataset.theme")
         sums = ev("[...document.querySelectorAll('.row.tally:not([hidden]) .sum')].map(s=>s.textContent)")
         assert sums and sums[0].startswith("2 tool calls") and "1 failed" in sums[0], sums
-        assert ev("document.querySelectorAll('.tick.fail').length") == 1 and ev("document.querySelectorAll('.tick.ok').length") == 1
-        # older turn folded on load (its steps hidden, its reply kept); the newest turn has no steps to fold
-        assert ev("[...document.querySelectorAll('.row.step')].every(r=>!r.offsetParent)")
+        assert ev("document.querySelectorAll('.tick.fail').length") == 1 and ev("document.querySelectorAll('.tick.ok').length") == 3
+        # older turns folded on load (their steps hidden, their replies kept); the newest turn opens
+        assert ev("[...document.querySelectorAll('.row.step')].filter(r=>!r.querySelector('.dpath')).every(r=>!r.offsetParent)")
+        assert ev("[...document.querySelectorAll('.row.step')].filter(r=>r.querySelector('.dpath')).every(r=>!!r.offsetParent)")
+        # edits read as diffs: the patch call shows path, +1 -1 and only the changed line coloured; its diff result just says applied
+        dp = ev("[...document.querySelectorAll('.term .dpath')].map(d=>d.textContent)")
+        assert dp == ["/tmp/notes.md +1 −1", "/tmp/x.py 2 lines"], dp
+        assert ev("[...document.querySelector('.term .dpath').parentNode.querySelectorAll('pre .del,pre .add')].map(s=>s.textContent)") == \
+            ["-teh cat", "+the cat"]
+        assert ev("document.querySelector('.term .dpath').parentNode.querySelector('.out').textContent").startswith("applied")
+        assert ev("document.querySelectorAll('.term')[3].querySelector('pre .hk')"), "write_file content is syntax-coloured"
+        # idle tab: plain title; the gateway here is unreachable, so the favicon carries the gray offline dot
+        tt, fav = ev("[document.title,document.querySelector('link[rel=icon]').getAttribute('href')]")
+        assert tt.endswith(" · A session") and not tt.startswith("●"), tt
+        assert fav.startswith("data:image/svg+xml,") and "8a8790" in fav, fav[:80]
         assert "3 days" in ev("document.querySelector('.row.oko:not(.step) .reply').textContent")
         # someone else's DM folded in: shown as the sender with a source chip, the [DM from ...] line stripped
         peer = ev("(r=>[r.querySelector('.who').textContent,r.querySelector('.via').textContent,r.querySelector('.md').textContent])"
                   "(document.querySelector('.row.in.peer'))")
         assert peer[0] == "helper" and peer[1] == "zulipDM" and peer[2].startswith("backup job"), peer
-        pg.click(".tgl"); assert ev("[...document.querySelectorAll('.row.step')].every(r=>r.offsetParent)")
+        pg.click(".tally .tgl"); assert ev("[...document.querySelectorAll('.row.step')].every(r=>r.offsetParent)")
         pg.click("#steps"); assert ev("[...document.querySelectorAll('.row.step')].every(r=>!r.offsetParent)")
         pg.keyboard.press("/"); pg.keyboard.type("zebra"); pg.wait_for_timeout(300)
         assert ev("document.getElementById('qn').textContent") == "2 of 2", ev("document.getElementById('qn').textContent")
-        pg.keyboard.press("Escape")
+        # every session: the server's matches (user text + the reply), marked; a hit in this session jumps in place
+        pg.click("#qall"); pg.wait_for_function("document.querySelectorAll('#hits .ah').length===2", timeout=3000)
+        assert ev("[...document.querySelectorAll('#hits mark')].map(m=>m.textContent.toLowerCase())") == ["zebra", "zebra"]
+        assert ev("document.querySelector('#hits .as').textContent") == "this session"
+        assert ev("document.querySelector('#hits .ah').getAttribute('href')") == "?session=s#m8"
+        pg.click("#hits .ah"); pg.wait_for_timeout(300)
+        assert ev("document.querySelector('.row.linked').dataset.mid") == "8" and ev("location.hash") == "#m8"
+        pg.fill("#q", "nomatchxyz"); pg.wait_for_timeout(400)
+        assert "Enter looks everywhere" in ev("document.getElementById('qn').textContent")
+        pg.keyboard.press("Enter"); pg.wait_for_function("document.querySelector('#hits .hd').textContent==='Nothing in any session'", timeout=3000)
+        pg.keyboard.press("Escape"); assert ev("document.getElementById('hits').hidden")
+        # permalinks: #m<id> scrolls to that row and marks it; a tool result's id lands on its call, unfolded
+        pg.goto(f"http://127.0.0.1:{port}/?session=s#m7"); pg.wait_for_timeout(1500)
+        assert ev("document.querySelector('.row.linked').dataset.mid") == "7" and not ev("atBottom()")
+        ev("location.hash='#m3'"); pg.wait_for_timeout(300)
+        assert ev("(r=>[r.dataset.mid,!!r.offsetParent])(document.querySelector('.row.linked'))") == ["2", True]
+        # edit & resend: a past message goes back into the box
+        pg.click(".row.in .edit"); assert ev("document.getElementById('msg').value") == "first question"
+        pg.fill("#msg", "")
         assert ev("document.body.classList.contains('offline')")                        # dead gateway -> read-only
         pg.fill("#msg", "/help"); pg.focus("#msg"); pg.keyboard.press("Enter"); pg.wait_for_timeout(500)
         assert ev("!!document.querySelector('.row.local .card')"), ev("document.getElementById('cnotes').textContent")
@@ -191,6 +230,13 @@ try:
         assert ev("navigator.clipboard.readText()") == "zebra thoughts"
         ev(f"[...{zr}.querySelectorAll('.cpw>.cp')].pop().click()"); pg.wait_for_timeout(150)
         assert ev("navigator.clipboard.readText()").startswith("Zebras are striped.")
+        # a turn exports as markdown (what was said + which tools ran) and links to itself
+        ev("document.querySelector('.tally .ta').click()"); pg.wait_for_timeout(150)
+        assert ev("navigator.clipboard.readText()").endswith("/?session=s#m1"), ev("navigator.clipboard.readText()")
+        ev("[...document.querySelector('.tally').querySelectorAll('.ta')][1].click()"); pg.wait_for_timeout(150)
+        tmd = ev("navigator.clipboard.readText()")
+        assert tmd.startswith("## ") and "first question" in tmd and "- ran `terminal` {\"command\":\"uptime\"}" in tmd, tmd
+        assert "The box has been up **3 days**." in tmd and "up 3 days" not in tmd, tmd       # tool output stays out
         shot = os.environ.get("UI_SHOT")
         if shot:
             pg.screenshot(path=shot)
@@ -265,16 +311,20 @@ try:
         # held and unknown notes. Second server, with a live stub gateway and a fake plugin socket.
         home = tempfile.mkdtemp(); gw_url, said = fake_agent(home); port2 = free_port()
         srv2 = subprocess.Popen([sys.executable, os.path.join(here, "oko-tail.py"), "--serve", str(port2), "--db", db, "--session", "s",
-                                 "--gateway", gw_url, "--env", os.devnull], stderr=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": home})
+                                 "--gateway", gw_url, "--env", os.devnull], stderr=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": home,
+                                 "OKO_TAIL_PEERS": "staging=/staging/,bad=javascript:alert(1)"})
         time.sleep(0.8)
         pg2 = b.new_page(viewport={"width": 1200, "height": 800}); pg2.on("pageerror", lambda e: errs.append(str(e)))
         pg2.goto(f"http://127.0.0.1:{port2}/"); pg2.wait_for_timeout(1500)
         e2 = pg2.evaluate
         assert not e2("document.body.classList.contains('offline')")
+        # other agents (OKO_TAIL_PEERS) sit at the bottom of the session list as plain links; a bad url never gets there
+        assert e2("[...document.querySelectorAll('#sesslist .so.peer')].map(a=>a.getAttribute('href')+' '+a.querySelector('.sn').textContent)") == ["/staging/ staging"]
         pg2.fill("#msg", "/"); pg2.wait_for_timeout(500)
         heads = e2("[...document.querySelectorAll('#slash .hd')].map(h=>h.textContent)")
         assert heads[:3] == ["Commands", "Info", "Session"], heads                        # categories, in the agent's order
-        assert e2("[...document.querySelectorAll('#slash .opt .n')].map(n=>n.firstChild.textContent)") == ["/help", "/usage", "/compress", "/busy"]
+        assert e2("[...document.querySelectorAll('#slash .opt .n')].map(n=>n.firstChild.textContent)") == \
+            ["/help", "/snip", "/usage", "/compress", "/busy", "/retry"]
         pg2.fill("#msg", "/compa"); pg2.wait_for_timeout(300)                             # aliases complete too
         assert "/compress" in e2("document.getElementById('slash').textContent")
         pg2.fill("#msg", "/usage"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(800)
@@ -285,6 +335,20 @@ try:
         assert "will run when" in e2("document.getElementById('cnotes').textContent"), e2("document.getElementById('cnotes').textContent")
         pg2.fill("#msg", "/nonesuch"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(500)
         assert "no /nonesuch" in e2("document.getElementById('cnotes').textContent")
+        # snippets: /snip <name> <text> saves (this browser only), /<name> in the menu puts the text in the box, /snip lists
+        n = len(said); cnotes = "document.getElementById('cnotes').textContent"
+        pg2.fill("#msg", "/snip greet hello there\nsecond line"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(300)
+        assert "Saved" in e2(cnotes) and len(said) == n, e2(cnotes)
+        pg2.fill("#msg", "/gre"); pg2.wait_for_timeout(300)
+        assert "Your snippets" in e2("document.getElementById('slash').textContent")
+        pg2.keyboard.press("Enter"); assert e2("document.getElementById('msg').value") == "hello there\nsecond line" and len(said) == n
+        pg2.fill("#msg", "/snip"); pg2.keyboard.press("Enter"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(300)
+        assert "/greet" in e2("[...document.querySelectorAll('.row.local .card')].pop().textContent")
+        pg2.fill("#msg", "")
+        # retry: a failed newest turn offers retry, which runs the agent's own /retry
+        e2("handle({rows:[{id:960,session:'s',role:'assistant',ts:Date.now()/1000,content:'boom',tool_calls:[],kind:'failed_turn'}],gateway:true})")
+        pg2.click(".row .retry"); pg2.wait_for_timeout(600)
+        assert said[-1] == {"op": "say", "text": "/retry"}, said[-1]
         # queue: while the agent is busy a message waits (box clears, Send says Queue), survives a reload, then goes
         # out by itself once idle; here /say fails (no key), so it stays at the front marked "not sent" with retry
         busy = "handle({rows:[],gateway:true,waiting:true,phase:'model',since_ts:Date.now()/1000,since:'00:00'})"
@@ -354,6 +418,33 @@ try:
         e2("document.getElementById('ctxp').hidden=true"); pg2.keyboard.press("t")
         assert not e2("document.getElementById('ctxp').hidden"); pg2.keyboard.press("Escape")
         assert e2("document.getElementById('ctxp').hidden")
+        # browse (b): memory split on §, skills open to their SKILL.md, a staged write approves through the socket
+        for p, body in (("memories/MEMORY.md", "first **note**\n§\nsecond"), ("skills/ops/ship/SKILL.md", "---\nname: ship\ndescription: d\n---\n# Ship it"),
+                        ("pending/memory/ab12cd34.json", json.dumps({"id": "ab12cd34", "action": "add", "summary": "remember <b>x</b>",
+                                                                      "origin": "background_review", "created_at": time.time() - 60, "payload": {"c": 1}}))):
+            os.makedirs(os.path.dirname(os.path.join(home, p)), exist_ok=True)
+            with open(os.path.join(home, p), "w") as f: f.write(body)
+        pg2.keyboard.press("b"); pg2.wait_for_function("document.querySelector('#brw .btabs .chip')", timeout=4000)
+        assert e2("[...document.querySelectorAll('#brw .btabs .chip')].map(c=>c.textContent)") == \
+            ["Memory 2", "About you 0", "Skills 1", "Cron 0", "Waiting on you 1"]
+        assert e2("document.querySelector('#brw .bbody .bent strong').textContent") == "note"
+        pg2.click("#brw .chip:text('Skills')"); pg2.click("#brw summary:has-text('ship')")
+        pg2.wait_for_function("document.querySelector('#brw details h1, #brw details .md')", timeout=3000)
+        assert "Ship it" in e2("document.querySelector('#brw details').textContent")
+        pg2.click("#brw .chip:text('Waiting on you')")
+        assert "remember <b>x</b>" in e2("document.querySelector('#brw .bbody').textContent") and not e2("document.querySelector('#brw .bbody p b')")
+        pg2.click("#brw .bacts .chip:text('Approve')"); pg2.wait_for_timeout(600)
+        assert said[-1] == {"op": "say", "text": "/memory approve ab12cd34"}, said[-1]
+        pg2.keyboard.press("Escape"); assert e2("document.getElementById('brw').hidden")
+        # approvals: a shell tool sitting >8 s in the main session offers /approve answers; idle hides them
+        e2("handle({rows:[],gateway:true,waiting:true,phase:'tool:terminal',since_ts:Date.now()/1000-20,since:'00:00'})")
+        pg2.wait_for_function("!document.getElementById('appr').hidden", timeout=3000)
+        pg2.click("#appr button:text('For this session')"); pg2.wait_for_timeout(500)
+        assert said[-1] == {"op": "say", "text": "/approve session"}, said[-1]
+        assert e2("[...document.querySelectorAll('#appr button')].map(b=>b.textContent)") == ["Approve", "For this session", "Deny"]
+        pg2.click("#appr button:text('Deny')"); pg2.wait_for_timeout(500)                  # held = queued, never "Sent"
+        assert "not delivered" in e2("document.getElementById('cnotes').textContent"), e2("document.getElementById('cnotes').textContent")
+        e2("handle({rows:[],gateway:true})"); pg2.wait_for_function("document.getElementById('appr').hidden", timeout=3000)
         # socket gone -> the menu falls back and commands say why instead of "invalid"
         os.unlink(os.path.join(home, "oko-tail.sock"))
         pg2.reload(); pg2.wait_for_timeout(1500)

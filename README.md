@@ -25,8 +25,17 @@ languages, and a tail is both what you follow (`tail -f`) and what trails along 
 
 ![oko's tail in the shelf-dark theme: a question, its tool step with terminal output, and a markdown reply with a list, a table and a code block](docs/screenshot.jpg)
 
+<details>
+<summary>See a turn happen (20 second GIF, 2 MB)</summary>
+
+![A question typed and sent; the agent waits on the model, runs a terminal command live, the output lands, the reply streams in, then the memory panel opens](docs/demo.gif)
+
+</details>
+
 - **A transcript organized by turn.** Your message, the agent's steps folded underneath, then its
   reply. Tool output renders as a terminal, JSON as tables, and markdown with syntax-highlighted code.
+  File edits (`patch`, `write_file`, memory replaces) show as a colored diff with the path and +/− counts.
+  Each turn's tally names its slowest tool call when one dominated.
 - **Live progress.** Turns sent from the page stream token by token: reasoning, reply text and the
   current tool. Turns started anywhere else (a chat platform, cron, the CLI) appear step by step,
   with a status line showing whether the agent is waiting on the model or running a tool.
@@ -45,14 +54,26 @@ languages, and a tail is both what you follow (`tail -f`) and what trails along 
 - **Copy buttons** on replies, reasoning, tool calls and code blocks.
 - **A token panel** (click the usage line, or press `t`): how full the context window is and what's
   using it (from the agent's own `/context`), the largest messages in context (click one to jump to
-  it), lifetime totals and cost, and one-click model switching for the session.
-- **Navigation and notifications.** A session switcher, search across the whole session, compaction
-  markers, labels on failed turns, and a desktop notification when a reply lands.
+  it), lifetime totals and cost, one-click model switching for the session, and tool health: calls,
+  failures, median and slowest time per tool over the last week.
+- **What the agent keeps** (the folder button, or press `b`): its memory notes, what it knows about
+  you, its skills (open one to read it), cron jobs, and memory or skill writes staged for your
+  approval, read straight from `$HERMES_HOME`. With the [command socket](#the-command-socket),
+  staged writes approve or reject in one click, and when a shell command has been waiting a while
+  the input box offers the agent's own `/approve` (once or for the session) and `/deny`. "Always" stays a typed command on purpose.
+- **Find it again, use it again.** Search one session with `/`, or press Enter when nothing there
+  matches to search every session. Each turn has a link straight to it, plus copy or download as
+  markdown. Hover one of your own messages to edit and resend it, `/retry` reruns the last one, and
+  `/snip <name> <text>` saves a prompt you can drop back in later with `/<name>`.
+- **Navigation and notifications.** A session switcher, compaction
+  markers, labels on failed turns, and a desktop notification when a reply lands. The browser tab
+  follows along too: the title carries the status line and the icon gets a dot (amber busy, blue
+  compacting, green unread reply, gray offline).
 - **Four themes**, cycled with `f` and remembered per browser: **shelf at night** (the default),
   **shelf** (tan paper and a Bookerly-style serif, set like an e-reader), **frost** (frosted glass
   with falling snow, light or dark to match your system) and the original dark theme.
 - **Keyboard shortcuts** for everything: `j`/`k` between turns, `s` steps, `/` search, `c` compose,
-  `f` theme, `t` tokens, `g`/`G` top and latest, `Esc` `Esc` stop, `?` for the full list.
+  `f` theme, `t` tokens, `b` memory and skills, `g`/`G` top and latest, `Esc` `Esc` stop, `?` for the full list.
 - **Built-in login**, optional: HTTP basic auth or your proxy's forward auth (see [Security](#security)).
 - **Mobile-friendly.**
 
@@ -113,6 +134,7 @@ single-profile hermes install.
 | `HERMES_GATEWAY` | `http://127.0.0.1:8642` | the gateway's API server |
 | `API_SERVER_KEY` | read from `$HERMES_HOME/.env` | overrides the key file, e.g. when the agent's `.env` isn't readable from here |
 | `OKO_TAIL_AGENT` | `hermes` | the agent's display name on the page |
+| `OKO_TAIL_PEERS` | none | other agents' tails for the session list, `name=url` comma-separated (`staging=/staging/,work=https://tail.example.com`). Run one oko-tail per agent (each with its own `HERMES_HOME` and port) and list the others here |
 | `OKO_TAIL_MAIN_ROUTE` | none | a gateway routing key, such as your own DM's. The page opens on the session it routes to and follows it across `/new`. |
 | `OKO_TAIL_MAIN_SESSION` | none | fallback session ID when the route doesn't exist yet |
 | `OKO_TAIL_OWNER` | none | `user_id=Label`: show your own messages as *Label* instead of your platform ID |
@@ -374,6 +396,7 @@ python3 docs/shots.py              # regenerates the README screenshots from a d
 | GET | `/rows?after=N&session=ID`, `/events` (SSE) | rows plus turn state (`waiting`, `phase`, `since`), `compacting`, `live` (the streamed overlay of a turn sent from the page, with its `stage`: wait, think, write or tool), `gateway` (up or down) and `stats` |
 | GET | `/earlier?before=N` | an older page of rows |
 | GET | `/ctx?session=ID` | what's in the context: sizes by kind and the largest active rows since the last compaction (estimated at 4 characters per token) |
+| GET | `/tools?session=ID` | tool health for the last 7 days: per tool, calls, failures (an `error`, a non-zero `exit_code` or `success: false`), median, slowest and total time from call to result |
 | GET | `/queue?session=ID` | the agent's own queue for the main session, from the socket: messages hermes queued behind a running turn or a compaction and DMs held for idle (`where`, `from`, `peer`, `text`, `ts`). None of it is in `state.db` until its turn starts |
 | GET | `/cmds` | the slash menu: `commands` (the agent's own list when the socket answers, with `socket: true`) and `skills` |
 | POST | `/say` `{session,message,images?}` | returns 202; the turn streams from the gateway's `/chat/stream` on a server thread, so reloading the page never interrupts it |

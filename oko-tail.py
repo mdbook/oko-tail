@@ -26,6 +26,7 @@ Sending needs a concrete session, so the compose box appears only when one is fo
 Endpoints: / (page), /app.css, /app.js, /rows?after=N&session=ID, /earlier?before=N&session=ID,
            /events (SSE; same payload as /rows: rows, turn state, live, gateway, stats), /cmds (slash menu), /queue (the agent's own queue),
            /ctx?session=ID (what fills the context),
+           /browse (memory, profile, staged writes, skills, cron: read off $HERMES_HOME), /skill?name=X (one SKILL.md),
            POST /say {session,message} -> 202, turn streams in the background (payload.live),
            POST /stop {session}, POST /steer {session,message} (only turns sent from this page: we hold their run_id),
            POST /cmd {session,name,args} (any command via the socket; REST fallback: title|status|model|fork|retry|stop|steer|skill).
@@ -61,6 +62,14 @@ AGENT = os.environ.get("OKO_TAIL_AGENT") or "hermes"  # what the page calls the 
 # The default session: wherever the gateway routes this key (e.g. your own DM), else MAIN, else the newest.
 MAIN_KEY = os.environ.get("OKO_TAIL_MAIN_ROUTE", "")
 MAIN = os.environ.get("OKO_TAIL_MAIN_SESSION", "")
+# Other agents' tails (one oko-tail per agent), listed under the session switcher: "name=url,name=url".
+# A url is http(s)://... or a path on this host (/other/); anything else is dropped.
+def parse_peers(s):
+    return [{"name": n.strip(), "url": u.strip()} for n, _, u in (p.partition("=") for p in s.split(","))
+            if n.strip() and re.fullmatch(r"(https?://[^\s\"'<>\\]+|/(?![/\\])[^\s\"'<>\\]*)", u.strip())]  # no //host, no /\host
+
+
+PEERS = parse_peers(os.environ.get("OKO_TAIL_PEERS", ""))
 # "user_id=Label": show that sender as Label; anyone else is shown by the local part of their id.
 OWNER = tuple(os.environ.get("OKO_TAIL_OWNER", "").partition("=")[::2])
 # Auth for --serve, off by default (then it binds loopback only). Either one lets a request in:
@@ -438,7 +447,7 @@ def page(args, sess):
     """index.html with the boot config inlined (JSON in a <script>: every '<' escaped, so no title can close
     the tag or open '<!--<script' and swallow the rest of the page)."""
     cfg = json.dumps({"session": sess, "main": main_session(args.db), "agent": AGENT, "ms": int(args.interval * 1000),
-                      "sessions": sessions_list(args.db)})
+                      "sessions": sessions_list(args.db), "peers": PEERS})
     return web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__CFG__", cfg.replace("<", "\\u003c"))
 
 
@@ -737,7 +746,7 @@ def skills_from_dir(root):
         except OSError:
             continue
         if meta.get("name"):
-            out.append({"name": meta["name"], "desc": meta.get("description", "")})
+            out.append({"name": meta["name"], "desc": meta.get("description", ""), "dir": d})
     return out
 
 
@@ -751,10 +760,64 @@ def skills_list(env_path=ENV, gateway=GATEWAY, root=SKILLS):
         out = [{"name": s["name"], "desc": s.get("description") or ""} for s in j["data"]
                if isinstance(s, dict) and isinstance(s.get("name"), str)]
     else:
-        out = skills_from_dir(root)
+        out = [{"name": s["name"], "desc": s["desc"]} for s in skills_from_dir(root)]  # never a path in the menu
     out = sorted({s["name"]: s for s in out}.values(), key=lambda s: s["name"])
     _SKILLS[(gateway, root)] = (time.monotonic(), out)
     return out
+
+
+def _read(path, cap=200_000):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read(cap)
+    except OSError:
+        return None
+
+
+def browse(home=HOME, root=SKILLS):
+    """What the agent keeps between turns, read straight off its files (read-only): memory notes, the user profile,
+    writes staged for approval, skills, cron jobs. Every value is plain text for the page to render as text."""
+    mem = {k: [e.strip() for e in (_read(os.path.join(home, "memories", f)) or "").split("\n§\n") if e.strip()]
+           for k, f in (("memory", "MEMORY.md"), ("user", "USER.md"))}
+    pend = []
+    for sub in ("memory", "skills"):
+        d = os.path.join(home, "pending", sub)
+        for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if not f.endswith(".json"):
+                continue
+            try:
+                j = json.loads(_read(os.path.join(d, f)) or "")
+            except (ValueError, RecursionError):
+                continue
+            if isinstance(j, dict) and re.fullmatch(r"[0-9a-f]{4,32}", str(j.get("id", ""))):
+                pend.append({"id": j["id"], "subsystem": sub, "action": str(j.get("action") or "")[:200],
+                             "summary": str(j.get("summary") or "")[:2000], "origin": str(j.get("origin") or "")[:200],
+                             "ts": j["created_at"] if isinstance(j.get("created_at"), (int, float)) else None,
+                             "detail": json.dumps(j.get("payload"), indent=1, ensure_ascii=False)[:8000]})
+    skills = []
+    for s in skills_from_dir(root):
+        d = s.pop("dir")   # pop first: {**s, ...: s.pop()} unpacks s before the pop runs
+        skills.append({**s, "category": os.path.dirname(os.path.relpath(d, root))})
+    try:
+        jobs = json.loads(_read(os.path.join(home, "cron", "jobs.json")) or "{}").get("jobs") or []
+    except (ValueError, AttributeError):
+        jobs = []
+    keep = ("id", "name", "prompt", "schedule_display", "enabled", "state", "next_run_at", "last_run_at",
+            "last_status", "last_error")
+    val = lambda v: v if v is None or isinstance(v, (bool, int, float)) else str(v)[:4000]  # text or a number, nothing nested
+    cron = [{k: val(j.get(k)) for k in keep} for j in jobs if isinstance(j, dict)]
+    return {**mem, "pending": sorted(pend, key=lambda p: p["ts"] or 0),
+            "skills": sorted(skills, key=lambda s: (s["category"], s["name"])), "cron": cron}
+
+
+def skill_text(name, root=SKILLS):
+    """One skill's SKILL.md by its name (looked up, never a path from the request) -> text, or None."""
+    top = os.path.realpath(root) + os.sep
+    for s in skills_from_dir(root):
+        p = os.path.realpath(os.path.join(s["dir"], "SKILL.md"))
+        if s["name"] == name and p.startswith(top):     # a symlinked SKILL.md never reads outside the skills dir
+            return _read(p)
+    return None
 
 
 def last_user_text(db, session):
@@ -794,6 +857,86 @@ def context_items(db, session, top=8):
                       "preview": " ".join((content or "").split())[:140]})
     items.sort(key=lambda i: -i["tokens"])
     return {"rows": len(rs), "parts": parts, "items": items[:top]}
+
+
+def tool_failed(content):
+    """A tool result that reports failure: an error field, a non-zero exit code or success false (else not failed)."""
+    try:
+        r = json.loads(content or "")
+    except ValueError:
+        return False
+    if not isinstance(r, dict):
+        return False
+    return bool(r.get("error")) or r.get("exit_code") not in (None, 0) or r.get("success") is False
+
+
+def tool_health(db, session, days=7):
+    """Per tool over the session's last `days`: calls, failures, median and slowest time (call row -> result row)."""
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        rs = con.execute("select role, timestamp, tool_calls, tool_call_id, tool_name, content from messages "
+                         "where session_id=? and timestamp>=? and role in ('assistant', 'tool') order by id",
+                         (session, time.time() - days * 86400)).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    called, stats = {}, {}
+    for role, ts, calls, call_id, tool, content in rs:
+        if role == "assistant":
+            for c in calls_of(calls):
+                cid = c.get("call_id") or c.get("id")
+                if cid:
+                    called[cid] = (str((c.get("function") or {}).get("name") or c.get("name") or "tool"), ts)
+        elif call_id in called:
+            name, t0 = called.pop(call_id)
+            s = stats.setdefault(tool or name, {"n": 0, "failed": 0, "secs": []})
+            s["n"] += 1
+            s["failed"] += tool_failed(content)
+            s["secs"].append(max(0.0, ts - t0))
+    out = []
+    for name, s in stats.items():
+        secs = sorted(s["secs"])
+        out.append({"tool": name, "n": s["n"], "failed": s["failed"], "median": secs[len(secs) // 2],
+                    "max": secs[-1], "total": sum(secs)})
+    out.sort(key=lambda t: -t["total"])
+    return {"days": days, "tools": out}
+
+
+def search_all(db, q, limit=50):
+    """Newest-first matches for `q` across every session: what was said, thought or run (LIKE, case-insensitive
+    for ASCII). Each hit carries a snippet around the first match so the page can show it without the row."""
+    q = q.strip()[:200]
+    if len(q) < 2:
+        return []
+    like = "%" + re.sub(r"([\\%_])", r"\\\1", q) + "%"
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return []
+    try:
+        rs = con.execute("select m.id, m.session_id, s.title, s.source, m.role, m.timestamp, m.tool_name, "
+                         "coalesce(m.content,''), coalesce(m.reasoning,''), coalesce(m.tool_calls,'') from " + FROM +
+                         " where m.active=1 and m._compressed_summary=0 and coalesce(m.display_kind,'')<>'session_meta'"
+                         " and (m.content like ?1 escape '\\' or m.reasoning like ?1 escape '\\'"
+                         " or m.tool_calls like ?1 escape '\\') order by m.id desc limit ?2", (like, limit)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    out, low = [], q.lower()
+    for mid, sid, title, source, role, ts, tool, content, reasoning, calls in rs:
+        k = next((k for k, t in enumerate((content, reasoning, calls)) if low in t.lower()), 0)
+        text = (content, reasoning, calls)[k]
+        i = max(0, text.lower().find(low))
+        a = max(0, i - 60)
+        snip = ("…" if a else "") + text[a:i + len(q) + 100].replace("\n", " ") + ("…" if i + len(q) + 100 < len(text) else "")
+        out.append({"id": mid, "session": sid, "title": title, "source": source, "role": role, "ts": ts,
+                    "tool": tool, "where": ("text", "thinking", "calls")[k], "snippet": snip})
+    return out
 
 
 def run_cmd(args, session, name, cargs, root=SKILLS):
@@ -1174,6 +1317,15 @@ def handler(args, auth, hosts=None):
                 data, ctype = json.dumps(payload(args, after, sess)).encode(), "application/json"
             elif urlparse(self.path).path == "/ctx":
                 data, ctype = json.dumps(context_items(args.db, sess) if sess != "*" else None).encode(), "application/json"
+            elif urlparse(self.path).path == "/tools":
+                data, ctype = json.dumps(tool_health(args.db, sess) if sess != "*" else None).encode(), "application/json"
+            elif urlparse(self.path).path == "/search":
+                data, ctype = json.dumps({"hits": search_all(args.db, q.get("q", [""])[0])}).encode(), "application/json"
+            elif urlparse(self.path).path == "/browse":
+                data, ctype = json.dumps(browse(getattr(args, "home", HOME), getattr(args, "skills", SKILLS))).encode(), "application/json"
+            elif urlparse(self.path).path == "/skill":
+                t = skill_text(q.get("name", [""])[0], getattr(args, "skills", SKILLS))
+                data, ctype = json.dumps({"text": t} if t is not None else {"error": "no such skill"}).encode(), "application/json"
             elif urlparse(self.path).path == "/queue":
                 items = socket_queue(getattr(args, "home", HOME)) if sess == main_session(args.db) else None
                 data, ctype = json.dumps({"items": items or [], "socket": items is not None}).encode(), "application/json"
@@ -1395,6 +1547,12 @@ def selftest():
     assert body == ["💭 think", '🔧 terminal({"cmd":"ls"})'], body
     assert render(rows[2], 2)[2] == ["ou …(+1)"]
     assert [r[0] for r in rows_after(db, "*", None)] == [4, 5, 6]  # '*' = every session (Zulip = one per sender)
+    # /search: every session, newest first, says where it matched; LIKE wildcards are literal; too short = nothing
+    assert [(h["id"], h["session"], h["where"]) for h in search_all(db, "OTHER")] == [(4, "x", "text")]
+    assert [(h["id"], h["where"]) for h in search_all(db, "termin")] == [(5, "calls")]
+    assert search_all(db, "think")[0]["where"] == "thinking" and search_all(db, "t")== [] and search_all(db, "o%") == []
+    assert [h["id"] for h in search_all(db, "o", 9)] == [] and [h["id"] for h in search_all(db, " ol ")] == [1]
+    assert search_all(db, "old")[0]["snippet"] == "old" and search_all(db + "-nope", "old") == []
     j = row_json(rows[1], 0)
     assert (j["reasoning"], j["tool_calls"], j["session"], j["source"], j["role"]) == \
         ("think", [{"name": "terminal", "params": {"cmd": "ls"}, "args": None}], "s", "zulip", "assistant"), j
@@ -1420,6 +1578,29 @@ def selftest():
     assert c["rows"] == 4 and [i["id"] for i in c["items"]][:2] == [2, 5], c
     assert c["parts"]["summary"] == 100 and c["parts"]["tool calls"] == len(tc) // 4 and c["parts"]["reasoning"] == 1, c
     assert c["items"][1]["tool"] == "terminal" and c["items"][1]["kind"] == "replies" and c["items"][0]["kind"] == "summary"
+    # /tools: each call paired with its result by call id; failures from error / exit_code / success; out of window ignored
+    tdb = os.path.join(os.path.dirname(db), "t.db")
+    t0 = time.time() - 100
+    tcon = sqlite3.connect(tdb)
+    tcon.execute("create table messages (id integer primary key, session_id, role, timestamp, tool_calls, tool_call_id, "
+                 "tool_name, content)")
+    call = lambda *ids: json.dumps([{"id": i, "function": {"name": n}} for i, n in ids])
+    tcon.executemany("insert into messages (session_id, role, timestamp, tool_calls, tool_call_id, tool_name, content) "
+                     "values (?,?,?,?,?,?,?)",
+                     [("s", "assistant", t0 - 9 * 86400, call(("old", "terminal")), None, None, None),
+                      ("s", "tool", t0 - 9 * 86400 + 99, None, "old", "terminal", "{}"),
+                      ("s", "assistant", t0, call(("a", "terminal"), ("b", "patch")), None, None, None),
+                      ("s", "tool", t0 + 4, None, "a", "terminal", '{"exit_code": 1}'),
+                      ("s", "tool", t0 + 5, None, "b", "patch", '{"success": true, "diff": ""}'),
+                      ("s", "assistant", t0 + 6, call(("c", "terminal")), None, None, None),
+                      ("s", "tool", t0 + 8, None, "c", "terminal", "plain text"),
+                      ("x", "tool", t0 + 9, None, "c", "terminal", '{"error": "x"}')])
+    tcon.commit()
+    tcon.close()
+    th = {t["tool"]: t for t in tool_health(tdb, "s")["tools"]}
+    assert th["terminal"] == {"tool": "terminal", "n": 2, "failed": 1, "median": 4, "max": 4, "total": 6}, th
+    assert th["patch"]["n"] == 1 and th["patch"]["failed"] == 0 and list(th) == ["terminal", "patch"], th
+    assert tool_health(tdb + "-nope", "s") is None and tool_failed('{"error": ""}') is False
     con.execute("update messages set active=1 where id=1")
     con.execute("update messages set _compressed_summary=0, content='a' where id=2")
     con.commit()
@@ -1448,7 +1629,7 @@ def selftest():
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
     cfg = json.loads(re.search(r'<script id=cfg type="application/json">(.*?)</script>', pg, re.S).group(1))
     assert cfg["session"] == "s" and cfg["ms"] == 2000 and [x["id"] for x in cfg["sessions"]] == ["s", "x"], cfg
-    assert cfg["agent"] == AGENT and "__AGENT__" not in pg and f"Message {AGENT}," in pg
+    assert cfg["agent"] == AGENT and cfg["peers"] == PEERS and "__AGENT__" not in pg and f"Message {AGENT}," in pg
     AGENT = "<b>&"                                                            # the name is escaped into the HTML
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
     assert "<b>&" not in pg.split('<script id=cfg')[0] and "&lt;b&gt;&amp;" in pg
@@ -1547,6 +1728,37 @@ def selftest():
     # the API key is never written into the page or a response body
     assert "API_SERVER_KEY" not in PAGE and "Bearer" not in PAGE
     assert "/say" in PAGE and "compose" in PAGE               # the compose surface is actually wired into the page
+    # peers: only web urls or same-host paths, never javascript:, protocol-relative or nameless
+    assert parse_peers(" staging = /staging/ ,x=https://t.example/a,bad=javascript:alert(1),pr=//evil.example,=/n,y") == \
+        [{"name": "staging", "url": "/staging/"}, {"name": "x", "url": "https://t.example/a"}]
+    assert parse_peers("") == [] and parse_peers("a=/\\evil.example,b=/ok\\x") == []   # browsers read \ as /
+    # /browse: memory split on §, staged writes (junk skipped), skills with category, cron; /skill by name only
+    h = tempfile.mkdtemp()
+    for p, body in (("memories/MEMORY.md", "one\n§\ntwo\nlines\n§\n"), ("memories/USER.md", "me"),
+                    ("pending/memory/ab12cd34.json", json.dumps({"id": "ab12cd34", "action": "add", "summary": "s",
+                                                                 "created_at": 5, "payload": {"content": "x"}})),
+                    ("pending/memory/bad.json", "{"), ("pending/skills/zz.json", json.dumps({"id": "../x"})),
+                    ("pending/memory/deep.json", "[" * 100000), ("pending/memory/ab12cd35.txt", json.dumps({"id": "ab12cd35"})),
+                    ("skills/SKILL.md", "---\nname: top\n---\n"), ("secret.md", "---\nname: leak\n---\nnope"),
+                    ("skills/ops/deploy/SKILL.md", "---\nname: deploy\ndescription: ship it\n---\nbody"),
+                    ("skills/solo/SKILL.md", "---\nname: solo\n---\n"), ("cron/jobs.json", json.dumps(
+                        {"jobs": [{"id": "j1", "name": "n", "schedule_display": "every 5m", "secret_field": 1}]}))):
+        os.makedirs(os.path.dirname(os.path.join(h, p)), exist_ok=True)
+        with open(os.path.join(h, p), "w") as f:
+            f.write(body)
+    os.makedirs(os.path.join(h, "skills/evil")); os.symlink(os.path.join(h, "secret.md"), os.path.join(h, "skills/evil/SKILL.md"))
+    b = browse(h, os.path.join(h, "skills"))
+    assert (b["memory"], b["user"]) == (["one", "two\nlines"], ["me"]), b
+    assert [(p["id"], p["subsystem"], p["ts"]) for p in b["pending"]] == [("ab12cd34", "memory", 5)], b["pending"]  # junk, deep, .txt skipped
+    assert '"content": "x"' in b["pending"][0]["detail"]
+    assert [(s["category"], s["name"], s["desc"]) for s in b["skills"]] == \
+        [("", "leak", ""), ("", "solo", ""), ("", "top", ""), ("ops", "deploy", "ship it")], b["skills"]
+    assert all(set(s) == {"name", "desc", "category"} for s in b["skills"]), b["skills"]   # no server paths on the wire
+    assert skill_text("leak", os.path.join(h, "skills")) is None                  # symlink out of the root: listed, never read
+    assert b["cron"][0]["schedule_display"] == "every 5m" and "secret_field" not in b["cron"][0]
+    assert browse(tempfile.mkdtemp(), "/nonexistent") == {"memory": [], "user": [], "pending": [], "skills": [], "cron": []}
+    assert skill_text("deploy", os.path.join(h, "skills")).endswith("body") and skill_text("../ops", h) is None
+    assert all("dir" not in s for s in skills_list("/dev/null", "http://127.0.0.1:9", os.path.join(h, "skills")))
     selftest_gateway(db)
     print("selftest ok")
 
@@ -1839,7 +2051,7 @@ def selftest_gateway(db):
     assert cmd("skill", "daily-report summarize today") == (202, {"ok": True})
     assert settle("s")["message"] == "Use your `daily-report` skill.\n\nsummarize today"
     assert skills_list(env, g, sk) == [{"name": "daily-report", "desc": "d"}]
-    assert skills_from_dir(sk) == [{"name": "deep-skill", "desc": "does a thing"}]   # the down-gateway fallback
+    assert [{k: v for k, v in x.items() if k != "dir"} for x in skills_from_dir(sk)] == [{"name": "deep-skill", "desc": "does a thing"}]   # the down-gateway fallback
     assert skills_list("/dev/null", g + "0", sk) == [{"name": "deep-skill", "desc": "does a thing"}]
     selftest_socket(A, post)
     selftest_http(A)
