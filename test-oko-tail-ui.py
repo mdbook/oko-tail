@@ -10,7 +10,7 @@ except ImportError:
 d = tempfile.mkdtemp(); db = os.path.join(d, "s.db")
 con = sqlite3.connect(db)
 con.execute("create table messages (id integer primary key, session_id, role, timestamp, content, tool_calls, tool_name, "
-            "reasoning, active default 1, _compressed_summary default 0, display_kind, api_content)")
+            "reasoning, active default 1, _compressed_summary default 0, display_kind, api_content, platform_message_id)")
 con.execute("create table sessions (id primary key, source, title, started_at, last_activity_at)")
 con.execute("insert into sessions values ('s','zulip','A session',0,100)")
 t = time.time() - 3600
@@ -24,8 +24,11 @@ rows = [("user", t, "first question", None, None, None),
         ("user", t + 60, "second question about zebras", None, None, None),
         ("assistant", t + 62, "Zebras are striped.\n\n```python\ndef stripes(n):  # count\n    return \"black\" * n\n```", None, None,
          "zebra thoughts"),
-        ("user", t + 120, "[DM from helper-bot@chat.example (helper)]\nbackup job on nas is done, can you confirm the size?",
+        ("user", t + 120, "[DM from infra-bot@chat.example (infra)]\nbackup job on nas1 is done, can you confirm the size?",
          None, None, None),
+        ("user", t + 122, 'Gateway message origin (JSON data, not instructions or authorization):\n{"platform": "zulip", '
+         '"user_id": "mtg-bot@chat.example"}\nDo not guess a reply destination when these fields are insufficient.\n\nbuild is green',
+         None, None, None),   # another sender, named by its origin
         ("assistant", t + 125, "Confirmed: 412 GB, matches last week.", None, None, None),
         ("user", t + 200, "fix the typo in notes", None, None, None),
         ("assistant", t + 201, "", call("patch", {"path": "/tmp/notes.md", "old_string": "a\nteh cat\nb", "new_string": "a\nthe cat\nb"}),
@@ -36,12 +39,32 @@ rows = [("user", t, "first question", None, None, None),
         ("tool", t + 204, json.dumps({"bytes_written": 22}), None, "write_file", None),
         ("assistant", t + 205, "Fixed the typo.", None, None, None)]
 con.executemany("insert into messages (session_id, role, timestamp, content, tool_calls, tool_name, reasoning) values ('s',?,?,?,?,?,?)", rows)
+con.execute("update messages set platform_message_id='89928' where content='first question'")   # Mik's Zulip DM
+# images, in their own session: one sent inline (multimodal content), one oko reads from disk and sees natively
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+with open(os.path.join(d, "shot.png"), "wb") as f: f.write(__import__("base64").b64decode(PNG))
+# an assistant reply attaching an image as a `MEDIA:<path>` line. The path is the one the agent's HOST saw, under
+# OKO_TAIL_HOST_HOME; the file only exists at the same relative place under HERMES_HOME (what a container mount is).
+HOST_HOME = "/host/hermes"
+os.makedirs(os.path.join(d, "cache", "scratch"))
+with open(os.path.join(d, "cache", "scratch", "river.png"), "wb") as f: f.write(__import__("base64").b64decode(PNG))
+con.execute("insert into sessions values ('img','zulip','Pictures',0,1)")
+con.executemany("insert into messages (session_id, role, timestamp, content, tool_calls, tool_name) values ('img',?,?,?,?,?)", [
+    ("user", t, "\x00json:" + json.dumps([{"type": "text", "text": "what is this?"},
+                                          {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}]), None, None),
+    ("assistant", t + 1, "", call("vision_analyze", {"image_url": os.path.join(d, "shot.png")}), None),
+    ("tool", t + 2, "\x00json:" + json.dumps({"_multimodal": True, "text_summary": "Image attached natively", "content": [
+        {"type": "text", "text": "Image attached natively"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}]}),
+     None, "vision_analyze"),
+    ("assistant", t + 3, "A single pixel.", None, None),
+    ("assistant", t + 4, "Here is the couch.\nMEDIA:" + HOST_HOME + "/cache/scratch/river.png\n", None, None)])
 con.commit()
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 here = os.path.dirname(os.path.abspath(__file__))
 srv = subprocess.Popen([sys.executable, os.path.join(here, "oko-tail.py"), "--serve", str(port), "--db", db, "--session", "s",
                         "--gateway", "http://127.0.0.1:9", "--env", os.devnull], stderr=subprocess.DEVNULL,
-                       env={**os.environ, "HERMES_HOME": d})       # d has no oko-tail.sock
+                       env={**os.environ, "HERMES_HOME": d, "OKO_TAIL_HOST_HOME": HOST_HOME,
+                            "OKO_TAIL_OWNER": "me@chat.example=Mik"})  # d has no oko-tail.sock
 srv2 = None
 
 
@@ -140,10 +163,15 @@ try:
         assert tt.endswith(" · A session") and not tt.startswith("●"), tt
         assert fav.startswith("data:image/svg+xml,") and "8a8790" in fav, fav[:80]
         assert "3 days" in ev("document.querySelector('.row.oko:not(.step) .reply').textContent")
-        # someone else's DM folded in: shown as the sender with a source chip, the [DM from ...] line stripped
+        # a fleet peer's DM: shown as the peer with a source chip, the [DM from ...] line stripped
         peer = ev("(r=>[r.querySelector('.who').textContent,r.querySelector('.via').textContent,r.querySelector('.md').textContent])"
                   "(document.querySelector('.row.in.peer'))")
-        assert peer[0] == "helper" and peer[1] == "zulipDM" and peer[2].startswith("backup job"), peer
+        assert peer[0] == "infra" and peer[1] == "zulipDM" and peer[2].startswith("backup job"), peer
+        # who sent each message, and from where: Mik over Zulip (it has a Zulip id), Mik in the page (none), another agent by its origin
+        who = ev("[...document.querySelectorAll('.row.in')].map(r=>[r.classList.contains('peer'),r.querySelector('.who')?.textContent,"
+                 "r.querySelector('.ch')?.textContent])")
+        assert who == [[False, "Mik", "Zulip"], [False, "Mik", "page"], [True, "infra", None], [True, "mtg", "Zulip"],
+                       [False, "Mik", "page"]], who
         pg.click(".tally .tgl"); assert ev("[...document.querySelectorAll('.row.step')].every(r=>r.offsetParent)")
         pg.click("#steps"); assert ev("[...document.querySelectorAll('.row.step')].every(r=>!r.offsetParent)")
         pg.keyboard.press("/"); pg.keyboard.type("zebra"); pg.wait_for_timeout(300)
@@ -190,6 +218,27 @@ try:
         assert ev("getComputedStyle(document.querySelector('.ghost .wisp')).animationName") == "sway"
         assert "turn " in ev("document.querySelector('#tail .bd span:last-child').textContent")
         ev("handle({rows:[],gateway:true,live:{run_id:'r',status:'done',started:Date.now()/1000,text:'x',tools:0}})")
+        # a turn this page did NOT send (Zulip, cron, the CLI) has no token stream here: the bundled hermes
+        # plugin's live stage fills the status line instead, with what has come back and a stage timer. Without
+        # the plugin the line is the database's own phase, unchanged.
+        prog = "handle({rows:[],gateway:true,waiting:true,phase:'model',since_ts:Date.now()/1000-30,since:'00:00',progress:%s})"
+        anim = "getComputedStyle(document.querySelector('#tail .wisp')).animationName"
+        ev(prog % "null")
+        assert ev("document.getElementById('state').textContent").startswith("waiting on the model for")
+        assert ev("document.body.dataset.phase") == "wait"
+        ev(prog % "{stage:'think',stage_ts:Date.now()/1000-2,reasoning_chars:4200,text_chars:0,open:true}")
+        assert ev("document.getElementById('state').textContent").startswith("thinking (4.2k chars) for"), ev("document.getElementById('state').textContent")
+        assert ev("document.body.dataset.phase") == "think" and ev(anim) == "sway"
+        assert "turn started 00:00" in ev("document.getElementById('tail').textContent")
+        ev(prog % "{stage:'write',stage_ts:Date.now()/1000-1,reasoning_chars:4200,text_chars:900,open:true}")
+        assert ev("document.getElementById('state').textContent").startswith("writing (900 chars) for"), ev("document.getElementById('state').textContent")
+        assert ev("document.body.dataset.phase") == "write" and ev(anim) == "flick"
+        ev(prog % "{stage:'wait',stage_ts:Date.now()/1000-4,reasoning_chars:0,text_chars:0,open:true}")
+        assert ev("document.getElementById('state').textContent").startswith("waiting on the model for")
+        ev("handle({rows:[],gateway:true,waiting:true,phase:'tool terminal',since_ts:Date.now()/1000-5,since:'00:00',progress:null})")
+        assert ev("document.getElementById('state').textContent").startswith("running terminal for"), ev("document.getElementById('state').textContent")
+        assert ev("document.body.dataset.phase") == "tool" and ev(anim) == "wag"
+        ev("handle({rows:[],gateway:true})")
         # life: the skeleton is gone once rows land; oko's tail is the activity indicator and its motion follows
         # the phase (sway thinking, wag on a tool, curl compacting); rows that arrive live get the enter animation
         assert ev("document.body.classList.contains('ready')")
@@ -215,11 +264,11 @@ try:
         pg.mouse.wheel(0, 99999); pg.wait_for_timeout(300)
         ev("handle({rows:[%s],gateway:true})" % tall(914)); pg.wait_for_timeout(400)
         assert ev("atBottom()")
-        # fenced code is colored by language, labeled, and the copy button still copies plain text
+        # fenced code is coloured by language, labelled, and the copy button still copies plain text
         assert ev("document.querySelector('.mdpre').dataset.lang") == "python"
         assert ev("[...document.querySelectorAll('.mdpre span:not(.cpt)')].map(x=>x.className).join()") == "hk,hc,hk,hs"
         assert ev("getComputedStyle(document.querySelector('.mdpre .hk')).color!==getComputedStyle(document.querySelector('.mdpre')).color")
-        # thinking and reply each get their own copy button, labeled, pinned to their own block; a click copies
+        # thinking and reply each get their own copy button, labelled, pinned to their own block; a click copies
         # that block's text only and the button turns into a check
         zr = "[...document.querySelectorAll('#log .row.oko')].filter(r=>r.textContent.includes('Zebras')).pop()"
         assert ev(f"[...{zr}.querySelectorAll('.cpw>.cp .cpt')].map(x=>x.textContent)") == ["thinking", "reply"]
@@ -230,6 +279,101 @@ try:
         assert ev("navigator.clipboard.readText()") == "zebra thoughts"
         ev(f"[...{zr}.querySelectorAll('.cpw>.cp')].pop().click()"); pg.wait_for_timeout(150)
         assert ev("navigator.clipboard.readText()").startswith("Zebras are striped.")
+        # "show full" expands the clipped field IN PLACE: the toggle swaps the clipped node for the full text
+        # rendered the same way (markdown, thinking, pre), never a second box below it; "show less" restores it.
+        # A block's copy button copies the full text. Rows are picked by data-mid, which stays put as the toggle
+        # swaps text. The ids sit above the live cursor, so handle() appends these rows the way a streamed turn
+        # would. (Clicks go through ev(), i.e. the DOM's own .click(), so a hidden step row still toggles.)
+        full_reply = "the whole **reply** text"
+        ev("handle({rows:[{id:920,session:'s',role:'assistant',ts:Date.now()/1000-40,content:'clipped beg',"
+           f"content_full:{json.dumps(full_reply)},tool_calls:[]}}],gateway:true}})")
+        pg.wait_for_timeout(200)
+        fr = "document.querySelector('#log .row[data-mid=\"920\"]')"
+        assert ev(f"{fr}.querySelector('.cpw .xfull .md').textContent") == "clipped beg", ev(f"{fr}.textContent")
+        assert ev(f"{fr}.querySelectorAll('.xfull').length") == 1
+        assert ev(f"{fr}.querySelector('.xfull .more').textContent") == f"show full ({len(full_reply)} chars)"
+        assert ev(f"{fr}.querySelector('.xfull').children.length") == 2, "the clipped node and its toggle, nothing else"
+        assert not ev(f"{fr}.querySelector('.xfull pre')"), "no redundant monospace box before expanding"
+        ev(f"{fr}.querySelector('.cpw>.cp').click()"); pg.wait_for_timeout(150)
+        assert ev("navigator.clipboard.readText()") == full_reply, "the reply's copy button takes the full text"
+        ev(f"{fr}.querySelector('.xfull .more').click()"); pg.wait_for_timeout(150)
+        # the SAME spot: the node the clipped text was in now holds the full rendering
+        assert ev(f"{fr}.querySelector('.cpw .xfull .md').textContent") == full_reply.replace("**", "")
+        assert ev(f"{fr}.querySelector('.cpw .xfull .md strong').textContent") == "reply", "the full text renders as markdown, not raw"
+        assert ev(f"{fr}.querySelectorAll('.xfull').length") == 1 and not ev(f"{fr}.querySelector('.xfull pre')")
+        assert ev(f"{fr}.querySelector('.xfull .more').textContent") == "show less"
+        ev(f"{fr}.querySelector('.xfull .more').click()"); pg.wait_for_timeout(150)
+        assert ev(f"{fr}.querySelector('.cpw .xfull .md').textContent") == "clipped beg"
+        assert ev(f"{fr}.querySelector('.xfull .more').textContent") == f"show full ({len(full_reply)} chars)"
+        # thinking expands the same way, in the thinking block itself (no second pre below it)
+        full_think = "a much longer thought"
+        ev("handle({rows:[{id:921,session:'s',role:'assistant',ts:Date.now()/1000-30,content:'',tool_calls:[],"
+           f"reasoning:'short think',reasoning_full:{json.dumps(full_think)}}}],gateway:true}})")
+        pg.wait_for_timeout(200)
+        tr = "document.querySelector('#log .row[data-mid=\"921\"]')"
+        assert ev(f"{tr}.querySelectorAll('.thinkw .xfull').length") == 1 and not ev(f"{tr}.querySelector('.thinkw pre')")
+        ev(f"{tr}.querySelector('.thinkw .cp').click()"); pg.wait_for_timeout(150)
+        assert ev("navigator.clipboard.readText()") == full_think
+        ev(f"{tr}.querySelector('.thinkw .xfull .more').click()"); pg.wait_for_timeout(150)
+        assert ev(f"{tr}.querySelector('.thinkw .think').textContent") == full_think
+        # a clipped tool result expands in the well's output slot, and the well's copy button takes the full text
+        full_out = "the complete tool output"
+        ev("handle({rows:[{id:922,session:'s',role:'tool',ts:Date.now()/1000-20,content:'cut out',tool_name:'terminal',"
+           f"content_full:{json.dumps(full_out)}}}],gateway:true}})")
+        pg.wait_for_timeout(200)
+        tw2 = "document.querySelector('#log .row[data-mid=\"922\"]')"
+        assert ev(f"{tw2}.querySelector('.out .xfull .more').textContent") == f"show full ({len(full_out)} chars)"
+        assert ev(f"{tw2}.querySelectorAll('.out pre').length") == 1, "one output node, not two"
+        ev(f"{tw2}.querySelector('.out .xfull .more').click()"); pg.wait_for_timeout(150)
+        assert ev(f"{tw2}.querySelector('.out pre').textContent") == full_out
+        ev(f"{tw2}.querySelector('.out .xfull .more').click()"); pg.wait_for_timeout(150)
+        assert ev(f"{tw2}.querySelector('.out pre').textContent") == "cut out"
+        # a clipped user message: the full text expands in the message's own block, with the peer prefix still stripped
+        pref, tail = "[DM from infra-bot@x (infra)]\n", "all of it, much longer"
+        ev("handle({rows:[{id:923,session:'s',role:'user',ts:Date.now()/1000-10,"
+           f"content:{json.dumps(pref + 'part of it')},content_full:{json.dumps(pref + tail)},tool_calls:[]}}],gateway:true}})")
+        pg.wait_for_timeout(200)
+        ur = "document.querySelector('#log .row.in[data-mid=\"923\"]')"
+        assert ev(f"{ur}.querySelector('.xfull .more').textContent") == f"show full ({len(tail)} chars)", ev(f"{ur}.querySelector('.xfull .more').textContent")
+        ev(f"{ur}.querySelector('.bd>.cp').click()"); pg.wait_for_timeout(150)
+        assert ev("navigator.clipboard.readText()") == tail, "the prefix stays stripped from the copy too"
+        ev(f"{ur}.querySelector('.xfull .more').click()"); pg.wait_for_timeout(150)
+        assert ev(f"{ur}.querySelector('.bd .md').textContent") == tail, "the peer prefix stays stripped when expanded"
+        # per-tool result renderers (keyed by tool name): web_search reads as a hit list (linked title, domain, snippet),
+        # a page fetch as title + url + folded text, the untrusted banner as a small badge with its text on hover. A
+        # non-http(s) url never becomes a link, result text never parses as HTML, and a shape the renderer doesn't
+        # know (or a tool with no renderer) keeps the generic view.
+        def call_and_result(i, name, params, res, wrap=None):
+            ev(f"handle({{rows:[{{id:{i},session:'s',role:'assistant',ts:Date.now()/1000-9,content:'',"
+               f"tool_calls:[{{name:{json.dumps(name)},params:{json.dumps(params)}}}]}},"
+               f"{{id:{i + 1},session:'s',role:'tool',ts:Date.now()/1000-8,tool_name:{json.dumps(name)},"
+               f"result:{json.dumps(res)},wrap:{json.dumps(wrap)},tool_calls:[]}}],gateway:true}})")
+            pg.wait_for_timeout(150)
+            return f"document.querySelector('#log .row[data-mid=\"{i}\"] .term')"
+        sw = call_and_result(930, "web_search", {"query": "zebra"}, {"success": True, "data": {"web": [
+            {"title": "Zebra facts", "url": "https://www.example.org/z", "description": "All about <b>stripes</b>", "position": 1},
+            {"title": "Bad link", "url": "javascript:alert(1)", "description": "x", "position": 2}]}}, "[UNTRUSTED EXTERNAL CONTENT]")
+        assert ev(f"{sw}.querySelectorAll('.wres li').length") == 2
+        assert ev(f"[...{sw}.querySelectorAll('.wres a')].map(a=>[a.textContent,a.getAttribute('href')])") == \
+            [["Zebra facts", "https://www.example.org/z"]], "only the https url is a link"
+        assert ev(f"{sw}.querySelector('.wres .wd').textContent") == "example.org"
+        assert ev(f"{sw}.querySelector('.wres .ws').textContent") == "All about <b>stripes</b>" and not ev(f"{sw}.querySelector('.wres b')")
+        assert ev(f"[{sw}.querySelector('.meta .untr').textContent,{sw}.querySelector('.meta .untr').title]") == \
+            ["untrusted source", "[UNTRUSTED EXTERNAL CONTENT]"]
+        so = ev(f"{sw}.querySelector('.out').textContent")
+        assert "UNTRUSTED" not in so and '"web"' not in so and "success" not in so, so      # no banner paragraph, no JSON dump
+        pw = call_and_result(932, "web_extract", {"urls": ["https://docs.example.com/a"]}, {"results": [
+            {"url": "https://docs.example.com/a", "title": "Doc A", "content": "\n".join(f"line {i}" for i in range(30))}]})
+        assert ev(f"(a=>[a.textContent,a.getAttribute('href')])({pw}.querySelector('.wpage .wh a'))") == ["Doc A", "https://docs.example.com/a"]
+        assert ev(f"{pw}.querySelector('.wpage .wd').textContent") == "docs.example.com"
+        assert ev(f"!!{pw}.querySelector('.wpage pre.fold')") and ev(f"{pw}.querySelector('.wpage .more').textContent") == "Show 22 more lines"
+        assert not ev(f"{pw}.querySelector('.untr')"), "no banner, no badge"
+        fw = call_and_result(934, "web_search", {"query": "x"}, {"success": False, "error": "rate limited"})
+        assert not ev(f"{fw}.querySelector('.wres')") and ev(f"{fw}.querySelector('.err').textContent") == "error: rate limited"
+        assert ev(f"{fw}.classList.contains('failed')")
+        uw = call_and_result(936, "custom_thing", {"q": 1}, {"answer": 42, "items": [1, 2]})
+        assert not ev(f"{uw}.querySelector('.wres,.wpage')")
+        assert ev(f"[...{uw}.querySelectorAll('.out dt')].map(d=>d.textContent)") == ["answer", "items"]
         # a turn exports as markdown (what was said + which tools ran) and links to itself
         ev("document.querySelector('.tally .ta').click()"); pg.wait_for_timeout(150)
         assert ev("navigator.clipboard.readText()").endswith("/?session=s#m1"), ev("navigator.clipboard.readText()")
@@ -384,12 +528,12 @@ try:
         assert "Stopped." in e2("document.getElementById('cnotes').textContent") or e2("document.querySelector('#queue .qi.failed')")
         pg2.click("#queue .qb[title^='Remove']")
         # the agent's own queue (a Zulip message behind a compaction, a peer's held DM) shows above the page's
-        QITEMS[:] = [{"where": "next", "id": "70426", "page": False, "from": "Sam", "peer": False, "text": "lmk when\nu get this",
-                      "images": 0, "ts": 1791697926.6}, {"where": "held", "id": "9", "page": False, "from": "helper", "peer": True,
-                      "text": "[DM from helper-bot@x (helper)]\n<b>hi</b>", "images": 1, "ts": None}]
+        QITEMS[:] = [{"where": "next", "id": "70426", "page": False, "from": "Mik", "peer": False, "text": "lmk when\nu get this",
+                      "images": 0, "ts": 1791697926.6}, {"where": "held", "id": "9", "page": False, "from": "infra", "peer": True,
+                      "text": "[DM from infra-bot@x (infra)]\n<b>hi</b>", "images": 1, "ts": None}]
         pg2.wait_for_function("document.querySelectorAll('#queue .qi.srv').length === 2", timeout=5000)
         assert e2("[...document.querySelectorAll('#queue .srv')].map(r=>[...r.querySelectorAll('span')].map(x=>x.textContent).join('|'))")[1] \
-            == "held|helper|<b>hi</b>|1 image", e2("document.getElementById('queue').textContent")
+            == "held|infra|<b>hi</b>|1 image", e2("document.getElementById('queue').textContent")
         assert e2("document.querySelector('#queue .srv .qt').textContent") == "lmk when u get this" and not e2("document.querySelector('#queue b')")
         if os.environ.get("UI_SHOT"):
             pg2.screenshot(path=os.environ["UI_SHOT"].replace(".png", "-srvq.png"))
@@ -450,6 +594,21 @@ try:
         pg2.reload(); pg2.wait_for_timeout(1500)
         pg2.fill("#msg", "/compress"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(500)
         assert "oko-tail socket" in e2("document.getElementById('cnotes').textContent"), e2("document.getElementById('cnotes').textContent")
+        # images: the one sent in sits under the message; the tool's well shows what it looked at, once, loaded
+        pg.goto(f"http://127.0.0.1:{port}/?session=img"); pg.wait_for_timeout(1500)
+        if ev("document.getElementById('steps').textContent") == "Show steps": pg.click("#steps")   # lazy: a hidden step never loads
+        pg.wait_for_function("[...document.querySelectorAll('.imgs img')].every(i=>i.complete)", timeout=3000)
+        assert ev("document.querySelector('.row.in .md').textContent") == "what is this?"
+        assert ev("[...document.querySelectorAll('.row.in .imgs img')].map(i=>[i.getAttribute('src'),i.naturalWidth])") == \
+            [["img?id=18&n=0", 1]], ev("document.querySelector('.row.in').outerHTML")
+        assert ev("[...document.querySelectorAll('.term .imgs img')].map(i=>[i.getAttribute('src'),i.naturalWidth])") == \
+            [["img?id=20&n=0", 1]], ev("document.querySelector('.term').outerHTML")
+        assert ev("document.querySelector('.term .imgs').closest('.out')") and "natively" in ev("document.querySelector('.term .out').textContent")
+        # an assistant reply's MEDIA: line: the tag is gone from the text and the image rides under the reply,
+        # served through the host-home remap (the literal host path is nowhere on this machine)
+        assert "MEDIA" not in ev("[...document.querySelectorAll('.row.oko:not(.step)')].pop().textContent")
+        assert ev("[...document.querySelectorAll('.row.oko:not(.step) .imgs img')].map(i=>[i.getAttribute('src'),i.naturalWidth])") == \
+            [["img?id=22&n=0", 1]], ev("[...document.querySelectorAll('.row.oko:not(.step)')].pop().outerHTML")
         assert not errs, errs
         b.close()
 finally:

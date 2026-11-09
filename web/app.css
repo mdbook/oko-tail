@@ -37,6 +37,8 @@ header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--ground
 body.live #mark svg,body.busy #mark svg{opacity:1;filter:none}
 body.compacting #mark svg{opacity:1;filter:none}
 #mark:hover svg{transform:rotate(-9deg);transition:transform var(--l) cubic-bezier(.3,1.6,.5,1)}
+/* the site's own brand mark (OKO_TAIL_BRAND), when set: small and static, beside the controls */
+#brand{height:1.6rem;width:auto;max-width:6rem;flex:0 0 auto;object-fit:contain}
 .sesswrap{flex:0 1 auto;min-width:0;position:relative}
 #sess{display:block;max-width:20rem;width:100%;background:transparent;color:var(--ink);border:0;border-radius:4px;
  padding:.25rem 1.3rem .25rem .4rem;font:500 .9rem var(--sans);cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -91,6 +93,7 @@ main{max-width:var(--w);margin:0 auto;padding:.25rem 1rem 9rem}
 .gut{padding:.6rem .8rem .5rem 0;border-right:2px solid var(--rail,var(--rule2));text-align:right;
  font-size:.72rem;line-height:1.35;color:var(--faint);font-variant-numeric:tabular-nums}
 .who{display:block;font-size:.8rem;font-weight:600;color:var(--dim);margin-bottom:.05rem}
+.ch{display:block;font-size:.68rem;font-weight:500;letter-spacing:.02em;color:var(--faint);margin-bottom:.1rem}
 .bd{padding:.5rem 0;min-width:0;position:relative}
 .oko{--rail:color-mix(in srgb,var(--iris) 45%,var(--rule))}
 .oko .who{color:var(--iris)}
@@ -102,7 +105,7 @@ main{max-width:var(--w);margin:0 auto;padding:.25rem 1rem 9rem}
 .in.sys{--rail:var(--faint)}
 .in.sys .who{color:var(--dim)}
 .in.sys .bd{color:var(--dim);font-size:.88rem}
-/* a peer agent's DM in the main session: the peer by name, a quiet source chip, the text in plain ink */
+/* a fleet peer's DM in the main session: the peer by name, a quiet source chip, the text in plain ink */
 .in.peer{--rail:var(--amber)}
 .in.peer .who{color:var(--amber)}
 .in.peer .bd{color:var(--ink)}
@@ -178,6 +181,13 @@ dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.05rem 1rem;
 dt{color:var(--faint)}
 dd{margin:0;color:var(--ink);white-space:pre-wrap;min-width:0}
 .meta{display:flex;flex-wrap:wrap;gap:.2rem 1.2rem;margin-top:.45rem;color:var(--faint);font:11.5px var(--sans);font-variant-numeric:tabular-nums}
+/* per-tool results: a search hit list, fetched pages, the untrusted-source badge */
+.wres{margin:0;padding-left:1.6em;font-family:var(--sans)}.wres li{margin:.1rem 0 .35rem}
+.wt{color:var(--ink);font-weight:600}a.wt{text-decoration:none}a.wt:hover{text-decoration:underline}
+.wd{color:var(--faint);margin-left:.6em;font-size:.85em}
+.ws{color:var(--dim);font-size:.92em}
+.wpage+.wpage{margin-top:.5rem}.wh{font-family:var(--sans);margin-bottom:.15rem}
+.untr{border:1px solid var(--rule);border-radius:3px;padding:0 .35em;cursor:help}
 .bad{color:var(--bad);font-weight:600}
 .err{color:var(--bad)}
 .add{color:var(--add)}.del{color:var(--del)}.hunk{color:var(--hunk)}
@@ -187,6 +197,7 @@ dd{margin:0;color:var(--ink);white-space:pre-wrap;min-width:0}
 .more{display:inline-block;background:none;border:0;padding:.2rem 0 0;color:var(--faint);font:.75rem var(--sans);cursor:pointer;
  text-decoration:underline dotted;text-underline-offset:3px}
 .more:hover{color:var(--ink)}
+.xfull{margin:.2rem 0}
 
 /* copy */
 .cp{position:absolute;top:.3rem;right:.35rem;z-index:1;display:inline-flex;align-items:center;gap:.3em;background:var(--panel);
@@ -290,6 +301,11 @@ body.offline #compose .box{border-style:dashed}
 .thumb button{position:absolute;top:.15rem;right:.15rem;width:1.2rem;height:1.2rem;border-radius:50%;border:0;padding:0;line-height:1;
  background:#000b;color:var(--ink);font-size:.8rem;cursor:pointer}
 .imgs img{width:7rem;height:5rem;border-radius:5px;border:1px solid var(--rule2)}
+/* images in the transcript: thumbnails under a message, the picture itself inside a tool's well */
+.imgs a{display:block;cursor:zoom-in}
+.in .imgs{margin-top:.4rem}
+.term .imgs{display:flex;flex-wrap:wrap;gap:.4rem;margin:.45rem 0}
+.term .imgs img{width:auto;height:auto;max-width:min(100%,26rem);max-height:18rem;object-fit:contain;background:var(--well)}
 body.dragging #compose .box{border-color:var(--iris);border-style:dashed}
 #send,#stop{border-radius:7px;padding:.45rem .95rem;font:600 .84rem var(--sans);cursor:pointer;border:1px solid transparent;
  transition:background var(--q) var(--ease),opacity var(--q) var(--ease),transform var(--q) var(--ease)}
@@ -375,6 +391,7 @@ body.composing main{padding-bottom:11rem}
  .row{display:block;border-left:2px solid var(--rail,var(--rule2));padding-left:.7rem}
  .gut{border:0;text-align:left;padding:.55rem 0 0;display:flex;gap:.6rem;align-items:baseline}
  .who{display:inline}
+ .ch{display:inline}.ch:before{content:'· '}
  .bd{padding-top:.15rem}
  .day,.tally{border-left-color:transparent}
  .day{padding-left:0}.day .gut{display:none}
@@ -527,8 +544,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--rule2) transparent}
 ::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
 .swapping *,.swapping *::before,.swapping *::after{transition:none!important}
 
-/* ---- frost, deeper: drifting snow (canvas) and fog behind real frosted glass.
-   Glass panels get the site's top sheen; wells and code blocks frost the snow that drifts behind them. */
+/* ---- frost, deeper: drifting snow on a canvas and fog behind real frosted glass.
+   Glass panels get a top sheen; wells and code blocks frost the snow that drifts behind them. */
 #snow{display:none;position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
 [data-theme=frost] #snow{display:block}
 main{position:relative;z-index:1}
@@ -584,7 +601,7 @@ body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
  --hk:#7b3a16;--code:#5a371a;--lamp:rgba(255,248,230,.55);--edge:rgba(120,82,40,.16);--sh:rgba(74,48,22,.32);
  --tint:#000;--gleam:#f6ecd6;--press:rgba(90,60,25,.12);--hi:rgba(255,255,255,.6);--scrim:rgba(60,40,20,.35);--chain:rgba(120,82,40,.035);--laid:rgba(120,82,40,.022);
  --fox:#a8642a;--fox-shade:#7e4520;--fox-tip:#fbf3e2;--fox-rim:#7e4520}
-/* shelf-dark: the same book at night, dark sepia under a lamp. Brown-black paper (never gray, never #000),
+/* shelf-dark: the same book at night, dark sepia under a lamp. Brown-black paper (never grey, never #000),
    parchment ink, copper and muted amber for oko and its work. All the rules are shared via [data-theme^=shelf]. */
 :root[data-theme=shelf-dark]{color-scheme:dark;
  --serif:Bookerly,Literata,Charter,"Iowan Old Style",Georgia,serif;
@@ -653,11 +670,11 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
 [data-theme^=shelf] .row.hit>.bd{background:linear-gradient(90deg,color-mix(in srgb,var(--amber) 12%,transparent),transparent 60%)}
 [data-theme^=shelf] .row.hit.now>.bd{background:linear-gradient(90deg,color-mix(in srgb,var(--amber) 22%,transparent),transparent 70%)}
 [data-theme^=shelf] .shimmer{background-image:linear-gradient(100deg,currentColor 38%,color-mix(in srgb,currentColor 35%,var(--gleam)) 50%,currentColor 62%)}
-/* things laid on the page: a lighter slip with a soft brown shadow, never a gray one */
+/* things laid on the page: a lighter slip with a soft brown shadow, never a grey one */
 [data-theme^=shelf] #compose{background:linear-gradient(transparent,color-mix(in srgb,var(--ground) 94%,transparent) 1.2rem)}
 /* at night the composer sits on a cut-out of the same paper (pinned to the viewport like the page), fading in at its
-   top edge so the log slips under it without a flat band. iOS Safari ignores background-attachment:fixed,
-   so there the vignette/fold may not line up exactly; fine, the grain and color still match. */
+   top edge so the log slips under it without a flat band. ponytail: iOS Safari ignores background-attachment:fixed,
+   so there the vignette/fold may not line up exactly; fine, the grain and colour still match. */
 :root[data-theme=shelf-dark] #compose{background:none}
 [data-theme=shelf-dark] #compose:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
  background:var(--paper),var(--ground);background-attachment:fixed;

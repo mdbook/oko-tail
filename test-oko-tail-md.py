@@ -23,5 +23,5 @@ chk = subprocess.run(["node", "--check"], input=js, capture_output=True, text=Tr
 assert chk.returncode == 0, chk.stderr[-600:]
 hl, plain = out[9], out[10]
 assert '<span .hk>"if"' in hl and '<span .hs>"\\"a#b\\""' in hl and '<span .hn>"42"' in hl, hl  # kw, string (# inside kept), number
-assert '<span .hc>"# see https://e.com"' in hl and "<span" not in plain, plain  # comment; an unlabeled fence stays plain
+assert '<span .hc>"# see https://e.com"' in hl and "<span" not in plain, plain  # comment; an unlabelled fence stays plain
 print("md selftest ok")

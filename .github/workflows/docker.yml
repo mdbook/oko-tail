@@ -1,26 +1,23 @@
-# Tests on every push and pull request, then the image to ghcr.io/<owner>/oko-tail.
-#   tag vX.Y.Z -> :vX.Y.Z and :release
-#   otherwise -> built (to prove the Dockerfile), never pushed
-# No :latest.
+# Image to ghcr.io/<owner>/oko-tail after the tests pass.
+#   main push -> :<sha>
+#   tag v*    -> :vX.Y.Z and :release
+# No :latest. Pull requests build (to prove the Dockerfile) but never push.
 name: docker
 on:
   push:
-    branches: ["**"]
-    tags: ["v*.*.*"]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - run: python3 oko-tail.py --selftest
       - run: python3 test-oko-tail-md.py
   image:
@@ -29,8 +26,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -41,10 +36,11 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           flavor: latest=false
           tags: |
+            type=sha,format=long,prefix=,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
-            type=raw,value=release,enable=${{ env.RELEASE }}
+            type=raw,value=release,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - uses: docker/login-action@v3
-        if: env.RELEASE == 'true'
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -53,6 +49,6 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ env.RELEASE == 'true' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

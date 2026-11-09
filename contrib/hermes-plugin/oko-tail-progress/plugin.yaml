@@ -1,0 +1,16 @@
+name: oko-tail-progress
+version: 1.0.0
+description: "Live stage of a running turn for oko's tail: registers the streaming observer hooks (wait, think, write, with a stage timer, character counts and a capped memory-only reasoning tail) and answers a read-only `progress` query on a local unix socket. Lets a watcher show what the model is doing for a turn it did not start."
+license: MIT
+provides_hooks:
+  - on_stream_start
+  - on_stream_delta
+  - on_stream_end
+config_schema:
+  think_cap:
+    type: int
+    default: 4000
+    description: "Maximum reasoning-tail characters kept in memory per session; 0 disables text retention."
+  socket_path:
+    type: str
+    description: "Where to listen, when OKO_TAIL_PROGRESS_SOCKET is unset (default: $HERMES_HOME/oko-tail-progress.sock)"

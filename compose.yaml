@@ -1,0 +1,19 @@
+# Keep the home path and uid:gid in quotes. See README.md for setup.
+x-hermes-home: &hermes-home "/home/you/.hermes" # EDIT 1: absolute HERMES_HOME on the host
+
+services:
+  oko-tail:
+    image: ghcr.io/mdbook/oko-tail:release
+    command: ["--serve", "9120"]
+    network_mode: host
+    user: "1000:1000" # EDIT 2: numeric uid:gid of the user running hermes
+    restart: unless-stopped
+    environment:
+      HERMES_HOME: *hermes-home
+    volumes:
+      - type: bind
+        source: *hermes-home
+        target: *hermes-home
+        read_only: true
+        bind:
+          create_host_path: false

@@ -1,0 +1,27 @@
+name: context-steward
+version: 1.0.0
+description: "Lets a hermes agent see and manage its own context size: records the real prompt-token count after every model call to a small JSON file other tools can read, and above a threshold adds one ephemeral line to the next turn telling the agent it's time to reset at its next clean seam."
+license: MIT
+provides_hooks:
+  - post_api_request
+  - pre_llm_call
+  - on_session_reset
+config_schema:
+  seam_tokens:
+    type: int
+    description: "Prompt tokens at which the agent starts getting the nudge line each turn (0 = never nudge; the meter still runs)"
+  ceiling_tokens:
+    type: int
+    description: "Prompt tokens at which the nudge switches to the urgent wording (0 = no urgent tier)"
+  state_file:
+    type: str
+    description: "Where the meter is written (default: $HERMES_HOME/state/context.json)"
+  platforms:
+    type: list
+    description: "Only meter and nudge sessions on these platforms (empty = every platform)"
+  nudge_template:
+    type: str
+    description: "The line added above seam_tokens. Fields: {tokens} {tokens_k} {seam_k} {ceiling_k}"
+  ceiling_template:
+    type: str
+    description: "The line added above ceiling_tokens. Same fields"

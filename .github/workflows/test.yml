@@ -1,0 +1,18 @@
+name: test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install pytest
+      - run: python3 -m pytest test_auth.py
+      - run: python3 oko-tail.py --selftest
+      - run: python3 test-oko-tail-md.py
+      - run: python3 contrib/hermes-plugin/test-plugin.py
+      - run: python3 contrib/hermes-plugin/test-context-steward.py

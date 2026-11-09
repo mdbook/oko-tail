@@ -1,4 +1,4 @@
-"""Regenerate the README screenshots: seeds a throwaway state.db with a made-up home-server session, serves it next to a
+"""Regenerate the README screenshots: seeds a throwaway state.db with a made-up homelab session, serves it next to a
 stub gateway (so the page reads online), and shoots each theme with headless Chromium into docs/.
     python3 docs/shots.py          (needs python playwright + its chromium)
     python3 docs/shots.py --gif    (docs/demo.gif instead; also needs ffmpeg)"""
@@ -51,7 +51,7 @@ def seed(db):
                 "output_tokens)")
     t = time.time() - 1800
     con.executemany("insert into sessions values (?,?,?,?,?,?,?,?)", [
-        ("main", "zulip", "home-server", t - 86400, t + 120, "claude-sonnet", 412000, 38500),
+        ("main", "zulip", "homelab", t - 86400, t + 120, "claude-sonnet", 412000, 38500),
         ("cron", "cron", "nightly digest", t - 3600, t - 3000, "claude-haiku", 21000, 2400),
         ("cli", "cli", "compose cleanup", t - 7200, t - 6000, "claude-sonnet", 88000, 9100)])
     rows = [
@@ -101,7 +101,7 @@ proxmox-backup-manager snapshot forget store1 vm/102/2026-10-04T02:03:12Z
 
 
 def play_turn(w, db, message):
-    """The --gif turn: stream events the way hermes does and write its rows to the DB as it goes, paced to watch."""
+    """The --gif turn: stream gateway events and write its rows to the DB as it goes, paced to watch."""
     def ev(name, **d):
         w.write(f"event: {name}\ndata: {json.dumps({'run_id': 'demo', **d})}\n\n".encode()); w.flush()
 
@@ -151,8 +151,8 @@ def gif(port, d):
     """docs/demo.gif: ask a question, watch the turn stream in (thinking, the tool call, the reply), peek at memory."""
     os.makedirs(os.path.join(d, "memories"))
     with open(os.path.join(d, "memories", "MEMORY.md"), "w") as f:
-        f.write("pbs-main keeps 30 daily backups on `store1`; verify runs at 04:00.\n§\n"
-                "Sam wants backup problems flagged in the morning summary, not as a page.\n§\n"
+        f.write("The backup server keeps 30 daily backups on `store1`; verify runs at 04:00.\n§\n"
+                "Backup problems belong in the morning summary, not as a page.\n§\n"
                 "`ct/110` is the media container: losing a night of it is fine.")
     vid = os.path.join(d, "vid")
     with sync_playwright() as p:

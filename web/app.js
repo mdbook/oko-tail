@@ -37,7 +37,7 @@ function ago(ts){const s=Date.now()/1000-ts;return s<90?'just now':s<3600?Math.r
 // ---- session switcher: a listbox, newest activity first, '*' last
 const sessBtn=$('sess'), sessList=$('sesslist');
 {
-  // the default session is just the agent's name; a hand-picked id names a session
+  // the default session is just the agent's name; a hand-picked id (oko-main) names a session
   // better than hermes' auto-title; minted ids don't
   const named=s=>s.id===CFG.main||!/^\d{8}_\d{6}_/.test(s.id);
   const name=s=>s.id===CFG.main?AG:named(s)?s.id:s.title||s.id;
@@ -103,6 +103,18 @@ function fold(node,text,n){
   b.onclick=()=>{node.classList.toggle('fold');b.textContent=label()};
   const w=el('div');w.append(node,b);return w;
 }
+// A field the server clipped (content, reasoning, tool args, a queued message) carries its untruncated text
+// in a `_full`/`full` sibling, already in this payload -- no extra request. The toggle swaps the clipped
+// rendering for the full text, rebuilt by `render(full)` the same way and in the same spot: one node, never
+// a second copy below. Append the returned wrapper where the clipped node would have gone. Like every other
+// render helper here the text only ever lands via textContent, never parsed as HTML.
+function expand(node,full,render){
+  const w=el('div','xfull'), b=el('button','more');b.type='button';
+  const clipped=()=>w.firstChild===node, label=()=>{b.textContent=clipped()?'show full ('+full.length+' chars)':'show less'};
+  b.onclick=()=>{w.replaceChildren(clipped()?render(full):node,b);label()};
+  w.append(node,b);label();
+  return w;
+}
 // Minimal markdown -> DOM (no HTML parsing: every string lands via textContent/createTextNode).
 const INL=/(`[^`\n]+`)|(\*\*[^*\n]+\*\*|__[^_\n]+__)|(\[[^\]\n]+\]\((https?:\/\/[^)\s]+)\))|(\*[^*\s\n][^*\n]*\*|\b_[^_\n]+_\b)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 function inl(parent,s){
@@ -119,9 +131,9 @@ function inl(parent,s){
   if(i<s.length)parent.append(s.slice(i));
   return parent;
 }
-// Fenced-code coloring: one cross-language pass (comments, strings, numbers, keywords), only when the fence
+// Fenced-code colouring: one cross-language pass (comments, strings, numbers, keywords), only when the fence
 // names a language. Comments need whitespace before them so URLs and $# survive; a stray apostrophe can only
-// mis-color the rest of its own line. diff fences reuse the tool-diff colors.
+// mis-colour the rest of its own line. diff fences reuse the tool-diff colours.
 const KW=new Set(('if else elif for while return def class import from as with try except finally raise in not and or is '+
   'None True False null true false undefined const let var function async await new this self export default fi then do '+
   'done case esac local break continue lambda yield pass match switch struct fn pub use impl type interface enum go func '+
@@ -239,6 +251,16 @@ function editWell(w,c,p){
   return true;
 }
 
+// Images in the transcript (a row's `images`, a call's `images`): our own /img?... or an http(s) URL, nothing else.
+// Each opens full size in a new tab; one that won't load (a cache file since cleaned up) just goes away.
+function imgs(list){
+  const srcs=(list||[]).filter(u=>typeof u==='string'&&(/^img\?id=\d+&n=\d+$/.test(u)||safeUrl(u)));
+  if(!srcs.length)return null;
+  const w=el('div','imgs');
+  for(const u of srcs){const a=el('a'), i=el('img');a.href=u;a.target='_blank';a.rel='noopener noreferrer';
+    i.src=u;i.alt='image';i.loading='lazy';i.onerror=()=>{a.remove();if(!w.childElementCount)w.remove()};a.append(i);w.append(a)}
+  return w;
+}
 // A tool call opens a well; its result is dropped into the same well when the tool row arrives.
 function callWell(c){
   const w=el('div','term'), p=c.params;
@@ -252,21 +274,75 @@ function callWell(c){
     const extra=kv(rest);if(extra)w.append(extra);
   }else{
     w.append(el('div','tool',c.name||'tool'));
-    if(isObj(p)){const a=kv(p);if(a)w.append(a);w._copy.push(c.name+' '+JSON.stringify(p,null,2))}
-    else if(c.args){w.append(text(null,c.args,6));w._copy.push(c.args)}
+    // a clipped call (c.full) swaps its args for the full JSON in place: no second box under the well
+    if(isObj(p)){const a=kv(p);if(a)w.append(c.full?expand(a,c.full,f=>el('pre',null,f)):a);
+      w._copy.push(c.name+' '+(c.full||JSON.stringify(p,null,2)))}
+    else if(c.args){const a=text(null,c.args,6);
+      w.append(c.full?expand(a,c.full,f=>el('pre',null,f)):a);w._copy.push(c.full||c.args)}
   }
+  w._imgs=imgs(c.images);if(w._imgs)w.append(w._imgs);   // the image file the call reads
   w.append(cpBtn(()=>w._copy.join('\n\n'),'Copy the call and its output'));
   w._run=el('div','run');w._run.append(wisp(),el('span','shimmer','running'));w.append(w._run);
   return w;
 }
+// ---- per-tool result renderers, keyed by tool name. A renderer takes the parsed result (object or array) and
+// returns {node, plain, used} -- used: the top-level keys it consumed -- or null when the shape isn't one it
+// knows, and the generic view takes over. Shapes are matched loosely (Hermes-style tools and their look-alikes);
+// add a tool by adding a key. Untrusted text lands via textContent; a link only gets an http(s) href.
+const safeUrl=u=>{try{const x=new URL(String(u));return x.protocol==='https:'||x.protocol==='http:'?x.href:null}catch(_){return null}};
+const host=u=>{try{return new URL(String(u)).hostname.replace(/^www\./,'')}catch(_){return ''}};
+const str=v=>typeof v==='string'?v:'';
+function link(u,label){
+  const h=safeUrl(u);if(!h)return el('span','wt',label||String(u||''));
+  const a=el('a','wt',label||h);a.href=h;a.target='_blank';a.rel='noopener noreferrer';return a;
+}
+// the list a result keeps its items in: the array itself, or the first array at one of `keys` (one level down too)
+function listOf(r,keys){
+  if(Array.isArray(r))return {list:r,used:[]};
+  for(const k of keys){const v=r[k];if(Array.isArray(v))return {list:v,used:[k]};
+    if(isObj(v))for(const j of keys)if(Array.isArray(v[j]))return {list:v[j],used:[k]}}
+  return null;
+}
+const urlOf=x=>str(x.url)||str(x.link)||str(x.href);
+function searchList(r){ // [{title,url,description}] -> linked title, domain, snippet
+  const h=listOf(r,['web','results','data','items','organic','news']);
+  if(!h||!h.list.every(x=>isObj(x)&&urlOf(x)))return null;
+  const ol=el('ol','wres'), plain=[];
+  for(const x of h.list){
+    const u=urlOf(x), t=str(x.title)||u, d=str(x.description)||str(x.snippet);
+    const li=el('li');li.append(link(u,t),el('span','wd',host(u)));if(d)li.append(el('div','ws',d));
+    ol.append(li);plain.push(t+'\n'+u+(d?'\n'+d:''));
+  }
+  return {node:h.list.length?ol:el('div','none','no results'),plain:plain.join('\n\n'),used:h.used};
+}
+const TEXT=['content','text','markdown','raw_content'];
+function pageList(r){ // [{url,title,content}] (or one such object) -> title + URL, the page text folded
+  const page=x=>isObj(x)&&(urlOf(x)||TEXT.some(k=>typeof x[k]==='string'));
+  const one=isObj(r)&&urlOf(r)&&page(r), h=one?{list:[r],used:['url','link','href','title',...TEXT]}:listOf(r,['results','data','pages','documents']);
+  if(!h||!h.list.length||!h.list.every(page))return null;
+  const box=el('div','wpages'), plain=[];
+  for(const x of h.list){
+    const u=urlOf(x), t=str(x.title), c=TEXT.map(k=>x[k]).find(v=>typeof v==='string')||'', w=el('div','wpage');
+    const hd=el('div','wh');hd.append(link(u,t||u||'(no url)'));if(u)hd.append(el('span','wd',host(u)));w.append(hd);
+    // a lone page's error is the result's own: the generic error line below shows it
+    if(!one&&!empty(x.error))w.append(text('err','error: '+(typeof x.error==='string'?x.error:JSON.stringify(x.error)),3));
+    w.append(c?text(null,c,8):el('div','none','(no text)'));
+    box.append(w);plain.push([t,u,c].filter(Boolean).join('\n'));
+  }
+  return {node:box,plain:plain.join('\n\n'),used:h.used};
+}
+const RESULTS={web_search:searchList,search:searchList,web_extract:pageList,web_fetch:pageList,fetch:pageList,web_crawl:pageList};
 const PRIMARY=['output','content','diff','stdout','text','result','message'];
 // -> [node, failed, plain text for copy/search]
-function result(m,callTs,edit){ // edit: the call already shows the change, so a diff result just says it applied
+function result(m,callTs,edit,name){ // edit: the call already shows the change, so a diff result just says it applied
   const out=el('div','out'), meta=el('div','meta'), r=m.result;let failed=false,plain='';
-  if(isObj(r)){
-    const rest={...r};
+  const R=r!=null&&Object.hasOwn(RESULTS,name||'')?RESULTS[name]:null, got=R&&R(r);
+  if(m.wrap){const b=el('span','untr',/untrusted/i.test(m.wrap)?'untrusted source':'wrapped');b.title=m.wrap;meta.append(b)}
+  if(isObj(r)||got){
+    const rest=isObj(r)?{...r}:{};
     const k=PRIMARY.find(k=>typeof r[k]==='string');
-    if(k){delete rest[k];plain=r[k];
+    if(got){out.append(got.node);plain=got.plain;for(const u of got.used)delete rest[u]}
+    else if(k){delete rest[k];plain=r[k];
       out.append(r[k]?(k==='diff'?(edit?el('div','none','applied'):diff(r[k],16)):text(null,r[k],14)):el('div','none','(no output)'))}
     else if(Array.isArray(r.matches)&&r.matches.every(x=>isObj(x)&&x.path)){
       delete rest.matches;
@@ -286,9 +362,12 @@ function result(m,callTs,edit){ // edit: the call already shows the change, so a
     plain=JSON.stringify(r,null,2);out.append(text(null,plain,14));
     if(callTs!=null)meta.append(el('span',null,took(m.ts-callTs)));
   }else{
-    plain=m.content||'';out.append(m.content?text(null,m.content,14):el('div','none','(no output)'));
+    plain=m.content_full||m.content||''; // a clipped output: copy takes the full text, the way the toggle shows it
+    const txt=m.content?text(null,m.content,14):el('div','none','(no output)');
+    out.append(m.content_full?expand(txt,m.content_full,f=>el('pre',null,f)):txt); // full output in place, no second box
     if(callTs!=null)meta.append(el('span',null,took(m.ts-callTs)));
   }
+  const iw=imgs(m.images);if(iw)out.append(iw);           // what a vision/screenshot tool actually looked at
   if(meta.childElementCount)out.append(meta);
   return [out,failed,plain];
 }
@@ -396,23 +475,25 @@ syncSteps();
 // ---- rows
 let after=-1, before=null, lastSess=null, lastWho=null, lastTs=null, lastDay=null, lastMsg=null, unseen=0, turn=null, compacting=false, ok=false;
 const pending=new Map(); // session -> tool-call wells still waiting for their result, in call order
-function row(m,who,cls){
-  const r=el('div','row '+cls), g=el('div','gut'), bd=el('div','bd');
+function row(m,who,cls,ch){ // ch: where a message was typed (Zulip, page), a quiet line under the sender
+  const r=el('div','row '+cls), g=el('div','gut'), bd=el('div','bd'), key=who+'\n'+(ch||'');
   if(!SINGLE)r.style.setProperty('--rail','hsl('+hue(m.session)+' 32% 42%)');
-  if(who!==lastWho)g.append(el('span','who',who));
+  if(key!==lastWho){g.append(el('span','who',who));if(ch)g.append(el('span','ch',ch))}
   g.append(el('span',null,hhmm(m.ts)));g.title=hhmmss(m.ts)+', '+dayLabel(m.ts);
   r.dataset.mid=m.id;r._m=m;
-  lastWho=who;r.append(g,bd);return [r,bd];
+  lastWho=key;r.append(g,bd);return [r,bd];
 }
 // Inbound rows hermes writes as role=user that no person typed: name the source instead of "zulip".
 // [pattern, label, system?]; a pattern with .strip drops its matched prefix from the shown text.
 const strip=re=>Object.assign(re,{strip:true});
-const INBOUND=[[/^\[IMPORTANT: Background process /,'background job',true],[/^\[System note:/,'system',true],
-  [strip(/^\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*/),'you, mid-turn',false]];
-// Someone else's DM that a plugin folded into the main session (README, The command socket): a first line of
-// "[DM from <id> (<name>)]" or "[group DM from <id> (<name>), with a, b]". Shown as that sender, with a source chip.
+const INBOUND=[[/^\[IMPORTANT: Background process /,'background job',true],[/^\[Portcullis\]/,'gate',true],
+  [/^🎫 Vikunja /,'vikunja',true],[/^\[System note:/,'system',true],
+  [strip(/^\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*/),'you, mid-turn',false],
+  [/^\[Zulip DM · from ([\w-]+)/,'zulip DM',false]];
+// A fleet peer's DM folded into the main session: "[DM from <email> (<name>)]" or
+// "[group DM from <email> (<name>), with a, b]" on its own line. Shown as that peer, with a source chip.
 const PEER=/^\[(group )?DM from (\S+) \(([^)\n]*)\)(?:, with ([^\]\n]*))?\]\n?/;
-const peerName=(name,id)=>name||id.split('@')[0];
+const peerName=(name,email)=>(name||email.split('@')[0]).replace(/-bot$/,'');
 function build(m,frag){
   const day=dayKey(m.ts);
   if(day!==lastDay){
@@ -422,7 +503,7 @@ function build(m,frag){
   if(m.compacted){
     // the summary row hermes writes when it folds older turns away (marker only; body is a prompt, not a turn)
     const [r,bd]=row(m,AG,'comp');
-    bd.append('Context compacted. Earlier turns were summarized so '+AG+' could keep going.');place(frag,r,m,false);
+    bd.append('Context compacted. Earlier turns were summarised so '+AG+' could keep going.');place(frag,r,m,false);
     curTurn.delete(m.session);return; // a compaction closes whatever turn was open
   }
   if(m.kind){ // hermes bookkeeping, not a turn: name it, never dress it as the agent's own words
@@ -430,7 +511,7 @@ function build(m,frag){
              internal_notification:['note','system note']}[m.kind];
     const label=K?K[1]:m.kind.replace(/_/g,' ');
     const [r,bd]=row(m,label,'notice '+(K?K[0]:'')+' aux');lastWho=null;
-    if(m.content)bd.append(fold(md(m.content),m.content,8));
+    if(m.content){const t=fold(md(m.content),m.content,8);bd.append(m.content_full?expand(t,m.content_full,f=>md(f)):t)}
     else bd.append(el('div','kd',m.kind==='hidden'?'No text recorded. The reply never finished.':'(no text)'));
     r._q=(label+' '+(m.content||'')).toLowerCase();
     place(frag,r,m,false);
@@ -442,16 +523,21 @@ function build(m,frag){
   }
   if(m.role==='user'){
     pending.delete(m.session);curTurn.delete(m.session);
-    let body=m.content||'', who=m.sender||m.source||'in', cls='in', via=null;
+    let body=m.content||'', who=m.sender||m.source||'in', cls=m.peer?'in peer':'in', via=null, ch=m.via, cut=0;
     const px=PEER.exec(body);
     if(px){
-      who=peerName(px[3],px[2]);cls='in peer';body=body.slice(px[0].length);
+      who=peerName(px[3],px[2]);cls='in peer';ch=null;body=body.slice(px[0].length);cut=px[0].length;
       via=el('div','via',px[1]?'group DM'+(px[4]?' with '+px[4].split(', ').map(e=>peerName('',e)).join(', '):''):'DM');
       via.prepend(el('span','src',m.source||'zulip'));via.title=px[2];
-    }else for(const [re,w,sys] of INBOUND){const x=re.exec(body);if(x){who=w;if(sys)cls='in sys';if(re.strip)body=body.slice(x[0].length);break}}
-    const [r,bd]=row(m,who,cls);lastWho=null;
+    }else for(const [re,w,sys] of INBOUND){const x=re.exec(body);if(x){who=w;ch=null;if(sys)cls='in sys';if(re.strip){body=body.slice(x[0].length);cut=x[0].length}break}}
+    const [r,bd]=row(m,who,cls,ch);lastWho=null;
     if(via)bd.append(via);
-    bd.append(cpPres(fold(md(body),body,12)),cpBtn(()=>body,'Copy message'));
+    // the preview had a prefix (a peer's "[DM from ...]" line, an origin preamble) stripped off the front, and
+    // the full text carries the same prefix (the server clips at the tail), so drop it there too
+    const full=m.content_full?m.content_full.slice(cut):null;
+    const msg=fold(md(body),body,12), xw=full?expand(msg,full,f=>cpPres(md(f))):msg;
+    bd.append(cpPres(xw),cpBtn(()=>full||body,'Copy message'));
+    const iw=imgs(m.images);if(iw)bd.append(iw);            // images sent in (the page, Zulip, any platform)
     if(cls==='in'&&SINGLE){const e=el('button','tgl edit','edit');e.type='button';e.title='Put this message back in the box to change and send again';
       e.onclick=()=>editInto(body);bd.append(e)}
     r._q=body.toLowerCase();r._who=who;r._text=body;frag.append(r);
@@ -461,16 +547,22 @@ function build(m,frag){
   }else if(m.role==='assistant'){
     for(const w of pending.get(m.session)||[]){w._run.replaceChildren('no result recorded');w._tick&&w._tick.classList.remove('go')}
     const [r,bd]=row(m,AG,'oko'), wells=[];
-    if(m.reasoning){const tw=cpWrap(fold(el('div','think',m.reasoning),m.reasoning,3),()=>m.reasoning,'Copy the thinking','thinking');
+    if(m.reasoning){
+      const tn=fold(el('div','think',m.reasoning),m.reasoning,3);
+      const xw=m.reasoning_full?expand(tn,m.reasoning_full,f=>el('div','think',f)):tn;
+      const tw=cpWrap(xw,()=>m.reasoning_full||m.reasoning,'Copy the thinking','thinking');
       tw.classList.add('thinkw');bd.append(tw)}
     if(m.content){
       const reply=!m.tool_calls.length;
-      bd.append(cpWrap(cpPres(fold(md(m.content,'reply'),m.content,60)),()=>m.content,reply?'Copy the reply':'Copy this text',
+      const cn=fold(md(m.content,'reply'),m.content,60);
+      const xw=m.content_full?expand(cn,m.content_full,f=>cpPres(md(f,'reply'))):cn;
+      bd.append(cpWrap(cpPres(xw),()=>m.content_full||m.content,reply?'Copy the reply':'Copy this text',
         m.reasoning?(reply?'reply':'text'):''));
     }
     let t=curTurn.get(m.session);
     place(frag,r,m,!m.content||m.tool_calls.length>0); // text beside a call is a preamble: a step, not a reply
     t=curTurn.get(m.session);
+    const aiw=imgs(m.images);if(aiw)bd.append(aiw);        // images the reply itself attaches (a MEDIA: line)
     for(const c of m.tool_calls){const w=callWell(c);w._ts=m.ts;w._row=r;wells.push(w);bd.append(w);addTick(t,w)}
     if(!bd.childElementCount)bd.append(el('div','none','(empty step)'));
     r._q=[m.reasoning,m.content,...m.tool_calls.map(c=>c.name+' '+(c.params?JSON.stringify(c.params):c.args||''))].join('\n').toLowerCase();
@@ -479,13 +571,14 @@ function build(m,frag){
     const q=pending.get(m.session)||[];
     const i=q.findIndex(w=>!m.tool_name||!w._name||w._name===m.tool_name);
     if(i>=0){
-      const w=q.splice(i,1)[0], [node,failed,plain]=result(m,w._ts,w._edit);
+      const w=q.splice(i,1)[0], [node,failed,plain]=result(m,w._ts,w._edit,w._name||m.tool_name);
+      if(w._imgs&&node.querySelector('.imgs'))w._imgs.remove(); // the result carries the image itself: show it once
       w._run.remove();w.append(node);w._copy.push(plain);if(!booting)node.classList.add('enter');
       settleTick(w,m.ts-w._ts,failed);
       if(w._row){w._row._q+='\n'+plain.toLowerCase();const t=w._row._turn;if(t&&m.ts>t.end){t.end=m.ts;dirty.add(t)}}
       return;
     }
-    const [r,bd]=row(m,AG,'oko'), w=el('div','term'), [node,,plain]=result(m,null);
+    const [r,bd]=row(m,AG,'oko'), w=el('div','term'), [node,,plain]=result(m,null,false,m.tool_name);
     w.append(el('div','tool',(m.tool_name||'tool')+' result'),node,cpBtn(()=>plain));bd.append(w);
     r._q=plain.toLowerCase();place(frag,r,m,true);
   }else{
@@ -518,7 +611,7 @@ function append(rows){
   showJump();
 }
 // Load a page of steps from before the top of the log and keep the viewport on what you were reading.
-// '*' view only (a single session loads whole); a turn split by the page edge shows as "continued".
+// ponytail: '*' view only (a single session loads whole); a turn split by the page edge shows as "continued".
 async function earlier(){
   if(before==null)return;
   more.disabled=true;more.textContent='Loading…';
@@ -573,6 +666,21 @@ const running=lv=>!!lv&&(lv.status==='running'||lv.status==='starting');
 const stageOf=lv=>lv.stage||(lv.tool?'tool':lv.text?'write':lv.thinking?'think':'wait');
 const STAGES={wait:'waiting on the model',think:'thinking',write:'writing'};
 const stageLabel=lv=>{const s=stageOf(lv);return s==='tool'?'running '+(lv.tool||'a tool'):STAGES[s]};
+// A turn the page did NOT send (a chat platform, cron, the CLI) has no token stream here, so its stage comes
+// from the bundled hermes plugin instead (j.progress, present only while its stream is open). Same three
+// stages, plus how much has come back and the timer; the text itself is never sent. stage_ts rides along, so
+// ticking needs no new request. `turn.progress` is rebuilt on every payload, so it clears itself.
+const stageLine=()=>{
+  if(running(live)){const s0=live.stage_ts||live.started, what=stageLabel(live), t=dur(Date.now()/1000-s0);
+    return [what+' for '+t, what+' for '+t+(s0-live.started>=1?', turn '+dur(Date.now()/1000-live.started):'')]}
+  if(!turn)return null;
+  const p=turn.progress, tool=turn.phase!=='model';
+  const what=!p?tool?'running '+turn.phase.slice(5):'waiting on the model'
+    :p.stage==='think'?'thinking ('+kfmt(p.reasoning_chars||0)+' chars)'
+    :p.stage==='write'?'writing ('+kfmt(p.text_chars||0)+' chars)':'waiting on the model';
+  const s0=p&&p.stage_ts?p.stage_ts:turn.since_ts, t=dur(Date.now()/1000-s0);
+  return [what+' for '+t, what+' for '+t+', turn started '+turn.since];
+};
 function renderLive(lv){
   live=lv||null;
   syncStop();
@@ -599,7 +707,7 @@ function renderLive(lv){
 function makePend(text,imgs){
   clearPend();
   const r=el('div','row in mine pend'), g=el('div','gut'), bd=el('div','bd');
-  g.append(el('span','who','you'),el('span',null,hhmm(Date.now()/1000)));
+  g.append(el('span','who',CFG.owner||'you'),el('span','ch','page'),el('span',null,hhmm(Date.now()/1000)));
   bd.append(md(text));
   if(imgs&&imgs.length){const w=el('div','imgs');for(const u of imgs){const i=el('img');i.src=u;i.alt='attached image';w.append(i)}bd.append(w)}const st=el('span','st shimmer','sending to '+AG+'…');bd.append(st);r.append(g,bd);r.classList.add('enter');
   ghost.before(r);pend={text,row:r,st,t0:Date.now()/1000};toBottom();
@@ -818,19 +926,17 @@ function tick(){tick1();tab()}
 function tick1(){
   if(!ok)return;
   syncAppr();
-  B.dataset.phase=compacting?'compact':running(live)?stageOf(live):turn?(turn.phase==='model'?'wait':'tool'):'';
+  const prog=turn&&turn.progress;      // the plugin's live stage for a turn this page didn't send
+  B.dataset.phase=compacting?'compact':running(live)?stageOf(live):prog?prog.stage
+    :turn?(turn.phase==='model'?'wait':'tool'):'';
   if(compacting){
-    state.textContent='compacting context…';tailText.textContent='compacting context: earlier turns are being summarized';
+    state.textContent='compacting context…';tailText.textContent='compacting context: earlier turns are being summarised';
     B.classList.add('compacting');return;
   }
   B.classList.remove('compacting');
-  if(running(live)){
-    const now=Date.now()/1000, s0=live.stage_ts||live.started, what=stageLabel(live), t=dur(now-s0);
-    state.textContent=what+' for '+t;tailText.textContent=what+' for '+t+(s0-live.started>=1?', turn '+dur(now-live.started):'');
-  }else if(turn){ // a turn seen only through the DB: no token stream, so "model" can't tell prefill from reasoning
-    const what=turn.phase==='model'?'waiting on the model':'running '+turn.phase.slice(5), t=dur(Date.now()/1000-turn.since_ts);
-    state.textContent=what+' for '+t;tailText.textContent=what+' for '+t+', turn started '+turn.since;
-  }else state.textContent=gatewayUp===false?'offline, read-only':lastTs?'idle, last step '+hhmm(lastTs):'idle';
+  const line=stageLine();
+  if(line){state.textContent=line[0];tailText.textContent=line[1]}
+  else state.textContent=gatewayUp===false?'offline, read-only':lastTs?'idle, last step '+hhmm(lastTs):'idle';
 }
 setInterval(tick,1000);
 function notifyEdge(busy){
@@ -937,7 +1043,7 @@ if(SINGLE){
 // ---- queue: a message (or a skill, or /retry: anything that starts a turn) sent while the agent is busy waits
 // here instead of colliding with the running turn, then goes out by itself, oldest first, once the agent has
 // been idle for a moment. Other commands (/status, /stop, /steer, /compress…) run straight away.
-// The queue's text survives a reload (localStorage, per session); attached images only live in this tab.
+// ponytail: the queue's text survives a reload (localStorage, per session); attached images only live in this tab.
 const queueEl=$('queue'), QK='queue:'+cur;
 let queue=[];try{queue=JSON.parse(store.get(QK,'[]')).filter(q=>q&&typeof q.text==='string')}catch(e){}
 let sending=0, idleSince=0, qFail=null;
@@ -988,7 +1094,7 @@ setInterval(loadSrvQ,3000);loadSrvQ();
 document.addEventListener('visibilitychange',loadSrvQ);
 function srvRow(it){
   const r=el('div','qi srv'), body=it.peer?it.text.replace(/^\[(?:group )?DM from [^\]\n]*\]\s*/,''):it.text;
-  r.title=(it.peer?it.from+': ':'')+it.text;
+  r.title=(it.peer?it.from+': ':'')+(it.text_full||it.text); // a one-line chip: the full text (when clipped) rides the tooltip
   r.append(el('span','qk',it.where==='held'?'held':it.where==='next'?'next':'queued'),
            el('span','qk dim',it.page?'page':it.peer?it.from:'zulip'),
            el('span','qt',body.replace(/\s+/g,' ').trim()||'(images only)'));
@@ -1297,8 +1403,7 @@ addEventListener('keydown',e=>{
 });
 $('keys').onclick=()=>{$('keys').hidden=true};
 const themeBtn=$('theme'),root=document.documentElement;
-// themes cycle default -> frost -> shelf -> shelf-dark (shelf-dark is the first-visit default, see index.html);
-// the button names the current one and shows the next one's icon
+// themes cycle default -> frost -> shelf; the button names the current one and shows the next one's icon
 const THEMES=['','frost','shelf','shelf-dark'], nextTheme=()=>THEMES[(THEMES.indexOf(root.dataset.theme||'')+1)%THEMES.length];
 function syncTheme(){const cur=root.dataset.theme||'default', nx=nextTheme()||'default';
   themeBtn.dataset.next=nx;themeBtn.setAttribute('aria-label','Theme: '+cur);themeBtn.title='Theme: '+cur+'. Switch to '+nx+' (f)';
@@ -1308,7 +1413,7 @@ function flipTheme(){const nx=nextTheme();if(nx)root.dataset.theme=nx;else delet
 themeBtn.onclick=()=>{
   if(!document.startViewTransition||smooth!=='smooth'){flipTheme();return}
   const b=themeBtn.getBoundingClientRect(), x=b.left+b.width/2, y=b.top+b.height/2, r=Math.hypot(Math.max(x,innerWidth-x),Math.max(y,innerHeight-y));
-  // swapping: element color transitions would otherwise replay inside the wipe (old colors fading in mid-way, which
+  // swapping: element colour transitions would otherwise replay inside the wipe (old colours fading in mid-way, which
   // reads as a stall); the curve is an even ease so the edge doesn't crawl through its last stretch off-screen
   root.classList.add('swapping');
   const vt=document.startViewTransition(flipTheme);

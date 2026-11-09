@@ -17,15 +17,14 @@ line per request) is up, every slash command is sent through it as the owner's o
 otherwise (socket missing, or a session other than the main one) a few are mapped to the gateway's REST calls (/cmd).
 
   oko-tail.py                 # follow the default session in the terminal (starts at the last user turn)
-  oko-tail.py --serve 9120    # same, as a web page: http://127.0.0.1:9120
+  oko-tail.py --serve 9120    # same, as a loopback web page: http://127.0.0.1:9120
   oko-tail.py --selftest
 
 The page opens at the last user turn; "load earlier steps" backfills from the log above it, and
 ?session=<id> focuses one session (the picker in the header switches; default: see OKO_TAIL_MAIN_*, '*' = all).
 Sending needs a concrete session, so the compose box appears only when one is focused.
-Endpoints: / (page), /app.css, /app.js, /rows?after=N&session=ID, /earlier?before=N&session=ID,
+Endpoints: / (page), /app.css, /app.js, /rows?after=N&session=ID, /earlier?before=N&session=ID, /img?id=N&n=I (a row's image),
            /events (SSE; same payload as /rows: rows, turn state, live, gateway, stats), /cmds (slash menu), /queue (the agent's own queue),
-           /ctx?session=ID (what fills the context), /search?q= (newest 50 matches across every session, with where it matched),
            /browse (memory, profile, staged writes, skills, cron: read off $HERMES_HOME), /skill?name=X (one SKILL.md),
            POST /say {session,message} -> 202, turn streams in the background (payload.live),
            POST /stop {session}, POST /steer {session,message} (only turns sent from this page: we hold their run_id),
@@ -57,8 +56,15 @@ ENV = os.path.expanduser(os.environ.get("OKO_TAIL_ENV") or os.path.join(HOME, ".
 # fallback skill list when the gateway is down (SKILL.md frontmatter)
 SKILLS = os.path.expanduser(os.environ.get("OKO_TAIL_SKILLS") or os.path.join(HOME, "skills"))
 SOCK = os.path.expanduser(os.environ.get("OKO_TAIL_SOCKET", ""))  # command socket, if not $HERMES_HOME/oko-tail.sock
+# The progress socket: the bundled hermes plugin (contrib/hermes-plugin/) reports the live stage of a turn
+# this page did NOT send (Zulip, voice), which the DB alone can't tell ("waiting on the model" covers queue,
+# prefill and reasoning). Read-only, and optional: without the plugin the page falls back to the DB phase.
+PROGRESS = os.path.expanduser(os.environ.get("OKO_TAIL_PROGRESS_SOCKET", ""))
+PROGRESS_NAME = "oko-tail-progress.sock"
 GATEWAY = os.environ.get("HERMES_GATEWAY") or "http://127.0.0.1:8642"  # hermes gateway session API (loopback)
 AGENT = os.environ.get("OKO_TAIL_AGENT") or "hermes"  # what the page calls the agent
+# OKO_TAIL_BRAND: an image file (svg/png/jpeg/webp/gif) shown in the header as your agent's brand mark. Unset: none.
+BRAND = os.path.expanduser(os.environ.get("OKO_TAIL_BRAND", ""))
 # The default session: wherever the gateway routes this key (e.g. your own DM), else MAIN, else the newest.
 MAIN_KEY = os.environ.get("OKO_TAIL_MAIN_ROUTE", "")
 MAIN = os.environ.get("OKO_TAIL_MAIN_SESSION", "")
@@ -76,6 +82,7 @@ OWNER = tuple(os.environ.get("OKO_TAIL_OWNER", "").partition("=")[::2])
 #   basic:   OKO_TAIL_USER + OKO_TAIL_PASSWORD (or OKO_TAIL_PASSWORD_FILE, read once at start)
 #   forward: OKO_TAIL_AUTH_HEADER, a header your auth proxy sets (X-Authentik-Username, Remote-User, ...),
 #            trusted only from OKO_TAIL_TRUSTED_PROXIES (default loopback). The proxy must drop client copies.
+#            OKO_TAIL_PROXY_SECRET_FILE optionally requires a shared secret too, read on every request.
 #   OKO_TAIL_HOST: the bind address. Anything but loopback refuses to start without one of the two.
 HOST = os.environ.get("OKO_TAIL_HOST") or "127.0.0.1"
 # OKO_TAIL_HOSTNAMES: the names browsers may reach us by (comma list; your proxy's public name). Loopback and
@@ -85,6 +92,18 @@ SID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")     # a session id we're willing to 
 COLS = ("m.id, m.role, m.timestamp, m.content, m.tool_calls, m.tool_name, m.reasoning, m.session_id, s.source, "
         "m._compressed_summary, m.display_kind, m.api_content")
 FROM = "messages m left join sessions s on s.id = m.session_id"
+# The platform's own id for a user row (a Zulip message id; "local-..." = the plugin socket), which is how a row's
+# channel is told. hermes' rewinds and compactions re-save a row as a copy that LOSES it, so a copy borrows the id
+# from the original (same user row, same timestamp). Older state.dbs have no such column: then it reads null.
+PMID = ("coalesce(m.platform_message_id, case when m.role = 'user' then (select o.platform_message_id from messages o "
+        "where o.role = 'user' and o.timestamp = m.timestamp and o.content = m.content and "
+        "o.platform_message_id is not null limit 1) end)")
+
+
+def cols(con):
+    have = {r[1] for r in con.execute("pragma table_info(messages)")}
+    return COLS + ", " + (PMID if "platform_message_id" in have else "null")
+
 
 # hermes writes bookkeeping rows alongside real turns; label them rather than passing them off as oko prose.
 # (value, css class, label). '' and unknown kinds keep the generic rendering.
@@ -103,7 +122,7 @@ def rows_after(db, session, after, limit=200):
             r = con.execute("select max(id) from messages where (?1='*' or session_id=?1) and role='user' and active=1",
                             (session,)).fetchone()
             after = (r[0] or 1) - 1
-        return con.execute(f"select {COLS} from {FROM} where (?1='*' or m.session_id=?1) and m.id>?2 and m.active=1 "
+        return con.execute(f"select {cols(con)} from {FROM} where (?1='*' or m.session_id=?1) and m.id>?2 and m.active=1 "
                            f"{SKIP} order by m.id limit ?3", (session, after, limit)).fetchall()
     finally:
         con.close()
@@ -112,7 +131,7 @@ def rows_after(db, session, after, limit=200):
 def last_row(db, session):
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
     try:
-        return con.execute(f"select {COLS} from {FROM} where (?1='*' or m.session_id=?1) and m.active=1 {SKIP} "
+        return con.execute(f"select {cols(con)} from {FROM} where (?1='*' or m.session_id=?1) and m.active=1 {SKIP} "
                            "order by m.id desc limit 1", (session,)).fetchone()
     finally:
         con.close()
@@ -122,7 +141,7 @@ def rows_before(db, session, before, limit=100):
     """The page before `before`, oldest-last so the caller can prepend. Walks back a page at a time."""
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
     try:
-        rs = con.execute(f"select {COLS} from {FROM} where (?1='*' or m.session_id=?1) and m.id<?2 and m.active=1 "
+        rs = con.execute(f"select {cols(con)} from {FROM} where (?1='*' or m.session_id=?1) and m.id<?2 and m.active=1 "
                          f"{SKIP} order by m.id desc limit ?3", (session, before, limit)).fetchall()
         return rs[::-1]
     finally:
@@ -161,6 +180,23 @@ def clip(s, width):
     return s if width <= 0 or len(s) <= width else s[:width] + f" …(+{len(s) - width})"
 
 
+FULL_CAP = 200_000  # hard ceiling for an expanded field: even "show full" can't dump an unbounded blob at the page
+
+
+def cap_full(s):
+    """s, hard-capped at FULL_CAP so one huge field can't blow up the "show full" expand toggle."""
+    return s if len(s) <= FULL_CAP else s[:FULL_CAP] + f"\n…(full text capped at {FULL_CAP} chars; {len(s) - FULL_CAP} more)"
+
+
+def clip_full(s, width):
+    """(preview, full) for a field that may offer an expand toggle: full is None when clip() wouldn't
+    actually cut anything (nothing more to show), else the untruncated text via cap_full. Verbatim,
+    un-escaped: the page only ever inserts either side via textContent, same as the preview."""
+    if not s or width <= 0 or len(s) <= width:
+        return s, None
+    return clip(s, width), cap_full(s)
+
+
 def calls_of(tool_calls):
     try:
         cs = json.loads(tool_calls) if tool_calls else []
@@ -172,11 +208,17 @@ def calls_of(tool_calls):
 def render(row, width):
     """(id, header, [body lines]) for one message row (terminal follow mode)."""
     mid, role, ts, content, tool_calls, tool_name, reasoning = row[:7]
+    content, imgs = split_content(content)
+    if role == "assistant":                                     # a reply's MEDIA: line is an attachment, not prose
+        content, mrefs = media_refs(content)
+        imgs = list(dict.fromkeys(imgs + mrefs))
+    if imgs:
+        content = (content + "\n" if content else "") + f"[{len(imgs)} image{'s' if len(imgs) > 1 else ''}]"
     kind = row[10] if len(row) > 10 else None
     head = f"{time.strftime('%H:%M:%S', time.localtime(ts))} #{mid} {role}" + (f" [{tool_name}]" if tool_name else "")
     body = []
     if len(row) > 9 and row[9]:  # _compressed_summary: the compaction marker, not a real turn
-        return mid, head + " [compacted]", ["⤓ context compacted: earlier turns summarized away"]
+        return mid, head + " [compacted]", ["⤓ context compacted: earlier turns summarised away"]
     if kind in KINDS:
         label = KINDS[kind][1]
         return mid, head + f" [{label}]", [f"{label}: {clip(content, width)}" if content else label]
@@ -204,56 +246,344 @@ def clip_tree(v, width, items=50):
     """Clip every string inside parsed JSON (clipping the raw text first would break the parse)."""
     if isinstance(v, str):
         return clip(v, width)
-    if isinstance(v, list):  # long lists cut to `items` entries + a marker string
+    if isinstance(v, list):  # ponytail: long lists cut to `items` entries + a marker string
         return [clip_tree(x, width) for x in v[:items]] + ([f"…(+{len(v) - items} more)"] if len(v) > items else [])
     if isinstance(v, dict):
         return {str(k): clip_tree(x, width) for k, x in v.items()}
     return v
 
 
+def tree_clipped(v, width, items=50):
+    """True when clip_tree(v, width, items) would actually cut something (a string leaf or an over-long list) --
+    i.e. there's more to show than the preview, so the expand toggle is worth offering."""
+    if width <= 0:
+        return False
+    if isinstance(v, str):
+        return len(v) > width
+    if isinstance(v, list):
+        return len(v) > items or any(tree_clipped(x, width, items) for x in v[:items])
+    if isinstance(v, dict):
+        return any(tree_clipped(x, width, items) for x in v.values())
+    return False
+
+
+JSON_LINE = re.compile(r"^[\[{]", re.M)
+
+
+def unwrap(content, cap=2000):
+    """Tool output some agents wrap in a provenance banner (hermes marks web/fetch output as untrusted: a note
+    before the JSON, maybe a closing marker after) -> (banner text, parsed JSON), else None. The JSON must start a
+    line and be an object or array; the banner around it is short (`cap` chars), so prose with JSON in it stays text."""
+    for m in JSON_LINE.finditer(content or ""):
+        if m.start() > cap:
+            return None
+        try:
+            v, end = json.JSONDecoder().raw_decode(content, m.start())
+        except ValueError:
+            continue  # e.g. a leading "[UNTRUSTED ...]" line: banner, not JSON
+        banner = (content[:m.start()].strip() + "\n" + content[end:].strip()).strip()
+        return (banner, v) if isinstance(v, (dict, list)) and len(content) - end <= cap else None
+    return None
+
+
 ORIGIN = re.compile(r"\AGateway message origin \([^)]*\):\n(\{.*?\})\n(?:Do not guess[^\n]*\n)?\n*", re.S)
 
 
-def split_origin(content):
-    """hermes prefixes inbound platform messages with an origin JSON preamble -> (sender, bare text)."""
+def origin_of(content):
+    """The origin preamble hermes puts on inbound platform messages -> (user_id, platform, bare text), or None."""
     m = ORIGIN.match(content or "")
     if not m:
-        return None, content
+        return None
     o = parse_json(m.group(1)) or {}
-    uid = str(o.get("user_id") or "")
-    who = OWNER[1] if OWNER[0] and uid == OWNER[0] else uid.split("@")[0] or None
-    return who, content[m.end():]
+    return str(o.get("user_id") or ""), str(o.get("platform") or ""), content[m.end():]
+
+
+def split_origin(content):
+    """-> (sender, bare text): the owner's label, else the local part of the sender's id."""
+    o = origin_of(content)
+    if not o:
+        return None, content
+    uid, _, text = o
+    return (OWNER[1] if OWNER[0] and uid == OWNER[0] else uid.split("@")[0].removesuffix("-bot") or None), text
+
+
+CHANNELS = {"zulip": "Zulip", "api_server": "page", "tui": "TUI", "cli": "CLI"}   # source -> what the page calls it
+DM_FROM = re.compile(r"\A\[(?:group )?DM from (\S+) \(([^)\n]*)\)")   # the Zulip plugin's line for another agent's DM
+IFACE = re.compile(r"now being answered on a different interface: (\w+)")
+
+
+def channel(source, pmid, api_content):
+    """Where an owner-typed user row came from. A Zulip id is Zulip; a "local-" id came over the plugin socket, the way
+    the page's own commands do (the plugin counts those as "page" too); the page's plain text goes through the API
+    server, which hermes leaves no id for, but often notes in api_content. No id and no note: the page, in a Zulip
+    session (every Zulip DM since the plugin cutover carries an id); else the session's own source."""
+    label = lambda k: CHANNELS.get(k, str(k).capitalize())
+    if pmid:
+        return "page" if str(pmid).startswith("local-") else label(source or "zulip")
+    m = IFACE.search(api_content or "")
+    if m:
+        return label(m.group(1))
+    return "page" if source in (None, "zulip") else label(source)
+
+
+def sender_of(content, source, pmid=None, api_content=None):
+    """A user row -> (who, where, peer, bare text). `who` is the owner's label (OKO_TAIL_OWNER, else "you") for
+    their own messages, or the id's local part for another sender named by an origin preamble; `peer` is true for
+    anyone but the owner. Text that is not a person's (gate and job notices) comes back labelled like anyone's;
+    the page relabels those from the text. A peer's "[DM from <id> (<name>)]" line names it; the page strips the line."""
+    o = origin_of(content)
+    if not o:
+        d = DM_FROM.match(content or "")
+        if d:
+            return ((d[2] or d[1].split("@")[0]).removesuffix("-bot"), CHANNELS.get(source or "zulip", "Zulip"), True, content)
+        return OWNER[1] or "you", channel(source, pmid, api_content), False, content
+    uid, platform, text = o
+    return (split_origin(content)[0] or OWNER[1] or "you", CHANNELS.get(platform, platform.capitalize()) or None,
+            bool(OWNER[0] and uid != OWNER[0]), text)
+
+
+# Images. hermes stores structured content as "\x00json:" + JSON: a user turn carrying images (the page, or a platform
+# in native-vision mode) is a list of OpenAI-style parts, and a tool that looked at an image (vision_analyze, a
+# screenshot) leaves {"_multimodal": true, "content": [parts], "text_summary": ...}. Without native vision, an image
+# sent in only shows up as its cache path in the text ("[Image attached at: /p]", "... image_url: /p"), and an image
+# oko reads is a path in the tool call's args. Each row's refs are numbered in one order (content first, then each
+# call's); the page loads data URLs and paths through /img?id=&n= (so a 4 MB screenshot isn't in every /rows push),
+# http(s) URLs directly. A path is only served if it is a real png/jpeg/gif/webp (magic bytes), whatever its name.
+CONTENT_JSON = "\x00json:"
+IMG_PATH = re.compile(r"(?:/|~/)[^\n\x00]*\.(?:png|jpe?g|gif|webp)", re.I)   # spaces allowed (always fullmatch'd)
+ATTACHED = re.compile(r"\[Image attached at: ([^\]\n]+)\]|image_url: ((?:/|~/)[^\s\]]+)")
+# An assistant reply attaches an image as a line of its own, `MEDIA:<path>` (hermes strips the tag when it delivers
+# the reply, so the database is the only place it survives). Bare or backtick-quoted; the value must look like an
+# image path (IMG_PATH), else the line is left as prose rather than silently swallowed.
+MEDIA = re.compile(r"[ \t]*`?MEDIA:(.*)")
+IMG_MAX = 20 << 20
+# An image ref is stored as the path the agent's HOST saw. In a container only the mount exists here (README:
+# `-v $HOME/.hermes:/hermes:ro`), so that literal path finds nothing. OKO_TAIL_HOST_HOME is the agent's hermes home
+# as the database records it: a path under it is remapped onto $HERMES_HOME (the mount). Unset (the default): no
+# remap, and a path that isn't here as-is is simply not served. Never a homelab path hardcoded in here.
+HOST_HOME = os.path.expanduser(os.environ.get("OKO_TAIL_HOST_HOME", ""))
+
+
+def part_image(p):
+    """One content part -> its image ref (a data:image URL or an http(s) URL), else None."""
+    if not isinstance(p, dict):
+        return None
+    if p.get("type") in ("image_url", "input_image"):
+        u = p.get("image_url")
+        u = u.get("url") if isinstance(u, dict) else u
+    elif p.get("type") == "image" and isinstance(p.get("source"), dict):  # Anthropic's shape
+        s = p["source"]
+        u = f"data:{s.get('media_type') or 'image/png'};base64,{s.get('data')}" if s.get("type") == "base64" else s.get("url")
+    else:
+        return None
+    return u if isinstance(u, str) and u.startswith(("data:image/", "https://", "http://")) else None
+
+
+def split_content(content):
+    """messages.content -> (text, [image refs]); plain text passes through with no refs."""
+    if not (isinstance(content, str) and content.startswith(CONTENT_JSON)):
+        return content, []
+    raw = content[len(CONTENT_JSON):]
+    v = parse_json(raw)
+    summary = None
+    if isinstance(v, dict) and isinstance(v.get("content"), list):
+        v, summary = v["content"], v.get("text_summary")
+    if not isinstance(v, list):
+        return (json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else raw), []
+    texts = [p if isinstance(p, str) else p.get("text") for p in v if isinstance(p, str) or (
+        isinstance(p, dict) and p.get("type") in ("text", "input_text"))]
+    text = "\n\n".join(t for t in texts if isinstance(t, str) and t) or (summary if isinstance(summary, str) else "")
+    return text, [r for r in map(part_image, v) if r]
+
+
+SPLIT_CACHE = {}   # (len, hash) of a big "\x00json:" content -> (text, refs with data URLs cut to "data:")
+SPLIT_BIG, SPLIT_KEEP, SPLIT_LOCK = 64 << 10, 256, threading.Lock()
+
+
+def split_light(content):
+    """split_content for the page: a big row (a multi-MB base64 screenshot) is JSON-parsed once, not on every
+    /rows, /events and /earlier; its data URLs come back as just "data:" (the page loads them via /img anyway)."""
+    if not (isinstance(content, str) and len(content) > SPLIT_BIG and content.startswith(CONTENT_JSON)):
+        return split_content(content)
+    key = (len(content), hash(content))
+    hit = SPLIT_CACHE.get(key)
+    if hit is None:
+        text, refs = split_content(content)
+        hit = text, [("data:" if r.startswith("data:") else r) for r in refs]
+        with SPLIT_LOCK:                     # the page's server is threaded
+            if len(SPLIT_CACHE) >= SPLIT_KEEP:
+                SPLIT_CACHE.pop(next(iter(SPLIT_CACHE)))
+            SPLIT_CACHE[key] = hit
+    return hit[0], list(hit[1])
+
+
+def call_images(params):
+    """Images a tool call reads: top-level args that are an image file's path, or an http(s) `image_url`."""
+    if not isinstance(params, dict):
+        return []
+    return [v for k, v in params.items() if isinstance(v, str) and (IMG_PATH.fullmatch(v) or (
+        k == "image_url" and v.startswith(("https://", "http://"))))]
+
+
+def media_refs(text):
+    """An assistant reply's own image attachments -> (text without the tag lines, [paths]). hermes writes an image
+    it attaches as a `MEDIA:<path>` line (bare or backtick-quoted) and strips the tag only when it delivers the
+    reply, so the database is the only place it survives. Only a whole line whose value is an image path counts,
+    and never inside a fenced code block (a `MEDIA:` there is an example, not an attachment); anything else stays."""
+    if not (isinstance(text, str) and "MEDIA:" in text):
+        return text, []
+    keep, refs, fence = [], [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            keep.append(line)
+            continue
+        m = None if fence else MEDIA.fullmatch(line)
+        p = m and m.group(1).strip().strip("`").strip()
+        if m and IMG_PATH.fullmatch(p):
+            refs.append(p)
+        else:
+            keep.append(line)
+    return ("\n".join(keep).strip("\n"), refs) if refs else (text, [])
+
+
+def row_media(row, light=False):
+    """-> (content as text, the content's image refs, [image refs per tool call]). light: see split_light."""
+    role, content, tool_calls = row[1], row[3], row[4]
+    text, refs = (split_light if light else split_content)(content)
+    if role == "user" and not refs and isinstance(text, str):   # no image inline: the cache path(s) in the text
+        refs = list(dict.fromkeys(p for p in ((a or b).strip() for a, b in ATTACHED.findall(text)) if IMG_PATH.fullmatch(p)))
+    elif role == "assistant" and isinstance(text, str):         # a reply's own MEDIA:<path> attachments
+        text, mrefs = media_refs(text)
+        refs = list(dict.fromkeys(refs + mrefs))
+    per_call = [call_images(parse_json((c.get("function") or {}).get("arguments")))
+                for c in calls_of(tool_calls)] if role == "assistant" else []
+    return text, refs, per_call
+
+
+def img_src(mid, n, ref):
+    """How the page loads ref #n of row `mid`: an http(s) URL as is, anything else through /img."""
+    return ref if ref.startswith(("https://", "http://")) else f"img?id={mid}&n={n}"
+
+
+def sniff(data):
+    """The image type of these bytes, by magic number, or None (we only ever serve what really is an image)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def local_path(ref, home=HOME, host_home=HOST_HOME):
+    """An image ref as a path on THIS host -> path, or None. The literal path wins. Else, when OKO_TAIL_HOST_HOME
+    is set and the ref sits under it, the same relative path is remapped onto `home` (the container mount: the
+    database records the host's path, only the mount exists here). The remapped path is resolved and must still
+    live inside `home`, so `..` or a symlink can never walk the read out of the hermes home."""
+    p = os.path.expanduser(ref)
+    if os.path.isfile(p):
+        return p
+    if not (host_home and os.path.isabs(p)):
+        return None
+    hh = os.path.normpath(host_home).rstrip("/")
+    if not (hh and (p == hh or p.startswith(hh + "/"))):
+        return None
+    q = os.path.realpath(os.path.join(os.path.realpath(home), os.path.relpath(p, hh)))
+    return q if q.startswith(os.path.realpath(home) + os.sep) and os.path.isfile(q) else None
+
+
+def image_of(db, mid, n, home=HOME, host_home=HOST_HOME):
+    """Image ref #n of message `mid` -> (bytes, content type, etag), or None (no such ref, unreadable, or not an
+    image). etag is None for a data URL (fixed in the row); a path's is its mtime + size, since the file can change."""
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    try:
+        row = con.execute(f"select {cols(con)} from {FROM} where m.id=?", (mid,)).fetchone()
+    finally:
+        con.close()
+    if not row:
+        return None
+    _, refs, per_call = row_media(row)
+    refs = refs + [r for cr in per_call for r in cr]
+    if not 0 <= n < len(refs):
+        return None
+    ref = refs[n]
+    data = etag = None
+    if ref.startswith("data:"):
+        try:
+            data = base64.b64decode(ref.partition(",")[2], validate=False)
+        except ValueError:
+            return None
+    elif not ref.startswith(("https://", "http://")):
+        p = local_path(ref, home, host_home)
+        try:
+            if p and os.path.getsize(p) <= IMG_MAX:
+                with open(p, "rb") as f:
+                    st = os.fstat(f.fileno())
+                    data = f.read(IMG_MAX)
+                etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        except OSError:
+            return None
+    ctype = sniff(data or b"")
+    return (data, ctype, etag) if ctype and len(data) <= IMG_MAX else None
 
 
 def row_json(row, width):
     """Structured row for the web page; the browser escapes everything (textContent).
-    Tool args become `params` (dict) and JSON tool output becomes `result`; raw text stays only as the fallback."""
+    Tool args become `params` (dict) and JSON tool output becomes `result`; raw text stays only as the fallback.
+    A field whose preview got cut also carries a `_full` (or, for a call, `full`) sibling: the untruncated
+    text, capped at FULL_CAP, for the page's expand toggle. Unclipped fields leave it None.
+    `images` (the row's) and each call's `images` are srcs for the page (see row_media)."""
     mid, role, ts, content, tool_calls, tool_name, reasoning, sid, source, *rest = row
     compressed = rest[0] if rest else 0
     kind = rest[1] if len(rest) > 1 else None
+    api_content = rest[2] if len(rest) > 2 else None
+    pmid = rest[3] if len(rest) > 3 else None
+    content, refs, per_call = row_media(row, light=True)
+    images =[img_src(mid, i, r) for i, r in enumerate(refs)]
+    n = len(refs)
     calls = []
-    for c in calls_of(tool_calls):
+    for k, c in enumerate(calls_of(tool_calls)):
         f = c.get("function") or {}
         raw = f.get("arguments") or ""
         p = parse_json(raw)
         if not isinstance(raw, str):
             raw = json.dumps(raw)
-        calls.append({"name": f.get("name"), "params": clip_tree(p, width) if isinstance(p, dict) else None,
-                      "args": None if isinstance(p, dict) else clip(raw, width)})
-    sender = None
+        is_dict = isinstance(p, dict)
+        if is_dict:
+            full = cap_full(json.dumps(p, indent=2, ensure_ascii=False)) if tree_clipped(p, width) else None
+        else:
+            _, full = clip_full(raw, width)
+        cr = per_call[k] if k < len(per_call) else []
+        calls.append({"name": f.get("name"), "params": clip_tree(p, width) if is_dict else None,
+                      "args": None if is_dict else clip(raw, width), "full": full,
+                      "images": [img_src(mid, n + j, r) for j, r in enumerate(cr)]})
+        n += len(cr)
+    sender = via = None
+    peer = False
     if role == "user":
-        sender, content = split_origin(content)
+        sender, via, peer, content = sender_of(content, source, pmid, api_content)
     result = parse_json(content) if role == "tool" else None
+    wrap = None
     if not isinstance(result, (dict, list)):
         result = None
-    return {"id": mid, "role": role, "ts": ts, "session": sid, "source": source, "sender": sender, "tool_name": tool_name,
-            "reasoning": clip(reasoning, width) if reasoning else None, "tool_calls": calls,
-            "result": clip_tree(result, width) if result is not None else None,
+        u = unwrap(content) if role == "tool" and isinstance(content, str) else None
+        if u:
+            wrap, result = clip(u[0], 500), u[1]   # the page shows the banner as a small badge, its text on hover
+    content_s, content_full = clip_full(content, width) if content and result is None else (None, None)
+    reasoning_s, reasoning_full = clip_full(reasoning, width) if reasoning else (None, None)
+    return {"id": mid, "role": role, "ts": ts, "session": sid, "source": source, "sender": sender, "via": via, "peer": peer,
+            "tool_name": tool_name,
+            "reasoning": reasoning_s, "reasoning_full": reasoning_full, "tool_calls": calls,
+            "result": clip_tree(result, width) if result is not None else None, "wrap": wrap,
             "compacted": bool(compressed), "kind": kind or None,
-            "content": clip(content, width) if content and result is None else None}
+            "content": content_s, "content_full": content_full, "images": images}
 
 
-STALE = 1800  # a turn with no new row for 30 min counts as dead, not working (hermes crash mid-turn)
+STALE = 1800  # ponytail: a turn with no new row for 30 min counts as dead, not working (hermes crash mid-turn)
 
 
 def turn_state(db, session, now=None):
@@ -299,12 +629,17 @@ def payload(args, after, session=None, now=None):
     rows = rows_after(args.db, session, None if after < 0 else after)
     now = now or time.time()
     st = turn_state(args.db, session, now)
+    live = live_get(session) if session != "*" else None
+    # Plugin overlays must be refreshed even when already present; gateway streams own their overlay.
+    prog = turn_progress(args, session, st) if not live or live.get("source") == "plugin" or live.get("ended") else None
+    live = live_progress(session, prog, st)
     return {"rows": [row_json(x, args.width) for x in rows],
             "session": session, "title": session_title(args.db, session),
             "waiting": bool(st), "phase": st and st["phase"], "since_ts": st and st["since_ts"],
             "since": time.strftime("%H:%M:%S", time.localtime(st["since_ts"])) if st else None,
+            "progress": prog,
             "compacting": compression_lock(args.db, session, now),
-            "live": live_get(session) if session != "*" else None,
+            "live": live,
             "gateway": gateway_up(getattr(args, "gateway", GATEWAY)),
             "stats": session_stats(args.db, session)}
 
@@ -379,6 +714,7 @@ def check(args):
     key = _api_key(args.env)
     up = gateway_up(args.gateway, fresh=True)
     sock = next((p for p in sock_paths(HOME) if os.path.exists(p)), "")
+    prog = next((p for p in progress_paths(HOME) if os.path.exists(p)), "")
     keysrc = "$API_SERVER_KEY" if os.environ.get("API_SERVER_KEY", "").strip() else args.env
     try:
         auth, autherr = auth_config(), ""
@@ -386,6 +722,10 @@ def check(args):
         auth, autherr = None, str(e)
     open_ = auth is not None and not (auth["user"] or auth["header"])
     authenv = env("OKO_TAIL_USER", "OKO_TAIL_AUTH_HEADER")
+    secret = proxy_secret(auth) if auth is not None else b""
+    secret_configured = bool(os.environ.get("OKO_TAIL_PROXY_SECRET_FILE"))
+    secret_inert = secret_configured and auth is not None and not auth["header"]
+    brand_ok = not BRAND or bool(brand_type() and os.path.isfile(BRAND))
     rows = [
         ("ok" if ok else "FAIL", "db", args.db, src(args.db, DB, "OKO_TAIL_DB", "HERMES_HOME"), note),
         ("ok" if key else "warn", "api key", "set" if key else "missing", keysrc,
@@ -396,11 +736,24 @@ def check(args):
          "" if os.path.isdir(SKILLS) else "no dir: the / menu lists skills only while the gateway is up"),
         ("ok" if sock else "warn", "socket", sock or sock_paths(HOME)[-1], env("OKO_TAIL_SOCKET", "HERMES_HOME"),
          "" if sock else "absent: only a few commands work, over the gateway's REST API"),
+        ("ok" if prog else "warn", "progress", prog or progress_paths(HOME)[-1],
+         env("OKO_TAIL_PROGRESS_SOCKET", "HERMES_HOME"),
+         "" if prog else "absent: a turn started elsewhere shows the database's phase, not live thinking/writing"),
         ("ok", "agent", AGENT, env("OKO_TAIL_AGENT"), ""),
+        ("ok" if not HOST_HOME or os.path.isdir(HOST_HOME) else "warn", "host home", HOST_HOME or "-",
+         env("OKO_TAIL_HOST_HOME"),
+         "" if not HOST_HOME else
+         ("host-path images remap onto " + HOME) if os.path.isdir(HOST_HOME) else
+         "not a directory: no remap, so a host-path image stays unserved"),
+        ("ok" if brand_ok else "warn", "brand", BRAND or "-", env("OKO_TAIL_BRAND"),
+         "" if brand_ok else "not shown: needs an existing .svg/.png/.jpg/.webp/.gif file"),
         ("ok", "session", args.session or (ok and main_session(args.db)) or "-",
          src(args.session, None, "OKO_TAIL_MAIN_ROUTE", "OKO_TAIL_MAIN_SESSION"), "opens on this one"),
         ("FAIL" if autherr else "ok", "auth", autherr and "invalid" or auth_mode(auth), authenv,
          autherr or ("loopback only: put an authenticating proxy in front to go off this box" if open_ else "")),
+        ("FAIL" if secret_configured and not secret else "warn" if secret_inert else "ok", "proxy secret",
+         ("set" if secret else "missing") if secret_configured else "off", env("OKO_TAIL_PROXY_SECRET_FILE"),
+         "inert: set OKO_TAIL_AUTH_HEADER to enable forward auth" if secret_inert else ""),
         ("ok", "hosts", ", ".join(sorted(host_names())), env("OKO_TAIL_HOSTNAMES"),
          "" if HOSTNAMES else "loopback only: a proxy's public name gets 421 until you add it"),
         ("FAIL" if open_ and not is_loopback(HOST) else "ok", "listen", HOST, env("OKO_TAIL_HOST"),
@@ -430,11 +783,14 @@ def follow(args):
 # opens a recessed well (`$ command` for terminal, name + key/value args for the rest) and its result
 # lands inside the same well (output text, then exit/duration/cwd), so call and output read as one unit.
 # Thinking is small dim prose, replies are full-size prose. While a turn is in flight oko's tail is the
-# activity indicator (it sways while thinking, wags on tools, curls while compacting). No external assets;
-# system fonts; all DB data via textContent.
+# activity indicator (it sways while thinking, wags on tools, curls while compacting). Inline only (page sits behind auth); system fonts; all DB data via textContent.
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 STATIC = {"/app.css": "text/css; charset=utf-8", "/app.js": "text/javascript; charset=utf-8", "/favicon.svg": "image/svg+xml",
           "/logo.svg": "image/svg+xml"}  # fixed allowlist, no path joins from the URL
+
+
+BRAND_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp", ".gif": "image/gif"}
 
 
 def web(name):
@@ -443,17 +799,37 @@ def web(name):
         return f.read()
 
 
+def brand_type(path=None):
+    """OKO_TAIL_BRAND's content type, or None when it's unset or not an image type we serve."""
+    path = BRAND if path is None else path
+    return BRAND_TYPES.get(os.path.splitext(path)[1].lower()) if path else None
+
+
+def brand():
+    """The brand image -> (bytes, ctype), or None. Read per request, like web/, so a swapped file is live."""
+    ctype = brand_type()
+    if not ctype:
+        return None
+    try:
+        with open(BRAND, "rb") as f:
+            return f.read(), ctype
+    except OSError:
+        return None
+
+
 def page(args, sess):
     """index.html with the boot config inlined (JSON in a <script>: every '<' escaped, so no title can close
     the tag or open '<!--<script' and swallow the rest of the page)."""
     cfg = json.dumps({"session": sess, "main": main_session(args.db), "agent": AGENT, "ms": int(args.interval * 1000),
-                      "sessions": sessions_list(args.db), "peers": PEERS})
-    return web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__CFG__", cfg.replace("<", "\\u003c"))
+                      "sessions": sessions_list(args.db), "peers": PEERS, "owner": OWNER[1]})
+    mark = '<img id=brand src="brand" alt="">' if brand_type() else ""
+    return (web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__BRAND__", mark)
+            .replace("__CFG__", cfg.replace("<", "\\u003c")))
 
 
 def _api_key(env_path=ENV):
     """API_SERVER_KEY for the gateway. Read in-process, returned to the caller only: never logged,
-    never echoed, never put in a response; it only travels to the gateway.
+    never echoed, never put in a response. Loopback-only by construction (the whole app binds 127.0.0.1).
     $API_SERVER_KEY in our own environment wins; otherwise the line in the env file."""
     if os.environ.get("API_SERVER_KEY", "").strip():
         return os.environ["API_SERVER_KEY"].strip()
@@ -484,18 +860,9 @@ def main_session(db):
     return MAIN or next((s["id"] for s in sessions_list(db)), "*")
 
 
-def known_session(db, sid):
-    """True if `sid` is an existing session with something to show. The send target must be one, of any age
-    (the picker's list stops at 30)."""
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-    try:
-        return con.execute("select 1 from sessions s where s.id=? and exists(select 1 from messages m where "
-                           "m.session_id=s.id and m.active=1 and coalesce(m.display_kind,'')<>'session_meta')",
-                           (sid,)).fetchone() is not None
-    except sqlite3.Error:
-        return False
-    finally:
-        con.close()
+def known_sessions(db):
+    """Session ids the viewer can already see. The send target must be one of these."""
+    return {s["id"] for s in sessions_list(db)}
 
 
 OFFLINE = f"{AGENT} is offline (gateway unreachable)"
@@ -563,6 +930,23 @@ def live_get(session):
             LIVE_VER[0] += 1
             r = None
         return dict(r) if r else None
+
+
+def live_progress(session, prog, st):
+    """Merge a plugin snapshot into the same overlay as gateway events, without granting run controls."""
+    with LIVE_LOCK:
+        run = LIVE.get(session)
+        if run and run.get("source") != "plugin" and not run.get("ended"):
+            return dict(run)  # the gateway is authoritative while its stream is running
+        if prog and prog.get("thinking") and st:
+            run = {"source": "plugin", "run_id": None, "status": "running", "started": st["since_ts"],
+                   "stage": prog["stage"], "stage_ts": prog["stage_ts"], "thinking": prog["thinking"],
+                   "text": "", "tool": None, "ended": None}
+            LIVE[session] = run
+        elif run and run.get("source") == "plugin":
+            del LIVE[session]  # no linger: reasoning disappears as soon as the stream ends
+            run = None
+        return dict(run) if run else None
 
 
 def sse_frames(lines):
@@ -682,7 +1066,7 @@ def turn_content(message, images):
 def start_turn(db, session, message, env_path=ENV, gateway=GATEWAY, images=()):
     """Fire one turn in `session` and return at once (202); the turn streams into LIVE[session].
     The id must be a session we already show, so a typo never runs a turn in a fresh session."""
-    if not known_session(db, session):
+    if session not in known_sessions(db):
         return 400, {"error": "unknown session"}
     if not _api_key(env_path):
         return 503, NOKEY
@@ -711,7 +1095,7 @@ def run_action(session, verb, message=None, env_path=ENV, gateway=GATEWAY):
 
 
 # Slash commands. The gateway session API passes "/x" to the model as text, so the ones a web client can
-# honor map to its REST routes here. `help` is drawn by the page itself; skills are listed separately.
+# honour map to its REST routes here. `help` is drawn by the page itself; skills are listed separately.
 COMMANDS = [
     {"name": "stop", "args": "", "desc": "Interrupt the turn you sent from this page"},
     {"name": "steer", "args": "<message>", "desc": "Nudge the running turn without stopping it"},
@@ -975,7 +1359,7 @@ def run_cmd(args, session, name, cargs, root=SKILLS):
     return (st if 200 <= st < 300 else (st or 502)), out
 
 
-# The plugin socket: one request per connection, one JSON line each way (see "The command socket" in the README).
+# The plugin socket: one request per connection, one JSON line each way (see the oko zulip plugin's README).
 # It always acts on the agent's one main session, so only that session's commands go through it.
 CMD_TIMEOUT = 90                                 # a slow command (/compress) gets this long, then we hand back what we have
 CMDNAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -997,11 +1381,11 @@ def sock_paths(home):
     return [p for p in (SOCK, ptr, base) if p]
 
 
-def sock_call(req, timeout=CMD_TIMEOUT, home=HOME):
+def sock_call(req, timeout=CMD_TIMEOUT, home=HOME, paths=None):
     """Send one request, read reply lines until `done` or `timeout` seconds -> [dict]. A reply that ends without a
     `done` (or times out) gets one added, reason 'timeout'/'closed'. Raises SockDown when nothing is listening."""
     s = None
-    for p in sock_paths(home):
+    for p in (sock_paths(home) if paths is None else paths):
         c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         c.settimeout(5)
         try:
@@ -1065,21 +1449,102 @@ def socket_commands(home=HOME):
     return None
 
 
-def socket_queue(home=HOME):
+def socket_queue(home=HOME, width=2000):
     """What waits to run in the main session (hermes' queue + DMs held for idle; none of it is in state.db yet)
-    -> list in run order, or None when the socket is down or doesn't know the op (an older plugin)."""
+    -> list in run order, or None when the socket is down or doesn't know the op (an older plugin).
+    `text` clips the same way message fields do (width, a `text_full` sibling when something was actually cut)."""
     try:
         lines = sock_call({"op": "queue"}, 3, home)
     except SockDown:
         return None
     for d in lines:
         if d.get("type") == "queue" and isinstance(d.get("items"), list):
-            return [{"where": str(i.get("where") or ""), "id": str(i.get("id") or ""), "page": bool(i.get("page")),
-                     "from": str(i.get("from") or ""), "peer": bool(i.get("peer")), "text": str(i.get("text") or "")[:2000],
-                     "images": i.get("images") if isinstance(i.get("images"), int) else 0,
-                     "ts": i.get("ts") if isinstance(i.get("ts"), (int, float)) else None}
-                    for i in d["items"] if isinstance(i, dict)]
+            out = []
+            for i in d["items"]:
+                if not isinstance(i, dict):
+                    continue
+                text, text_full = clip_full(str(i.get("text") or ""), width)
+                out.append({"where": str(i.get("where") or ""), "id": str(i.get("id") or ""), "page": bool(i.get("page")),
+                           "from": str(i.get("from") or ""), "peer": bool(i.get("peer")), "text": text, "text_full": text_full,
+                           "images": i.get("images") if isinstance(i.get("images"), int) else 0,
+                           "ts": i.get("ts") if isinstance(i.get("ts"), (int, float)) else None})
+            return out
     return None
+
+
+PROGRESS_STAGES = ("wait", "think", "write")   # what the plugin reports; "tool" is derived from the DB phase
+PROGRESS_TIMEOUT = 2      # seconds to wait on the progress socket before calling it absent
+PROGRESS_RETRY = 10       # ... and how long to leave it alone after that, so a wedged plugin can't stall the page
+_PROGRESS_DOWN = {}       # home -> when we may try again
+
+
+def progress_paths(home=HOME):
+    """Where the progress socket may be: OKO_TAIL_PROGRESS_SOCKET, the plugin's pointer file (it binds
+    elsewhere when the default path is too long), then the default under the hermes home."""
+    base = os.path.join(home, PROGRESS_NAME)
+    try:
+        with open(base + ".path", encoding="utf-8") as f:
+            ptr = f.read().strip()
+    except OSError:
+        ptr = ""
+    return [p for p in (PROGRESS, ptr, base) if p]
+
+
+def socket_progress(session, home=HOME):
+    """The live stage and optional capped reasoning tail the bundled plugin reports for `session`, or
+    None when it isn't installed / isn't answering.
+
+    `payload` is on the hot path, so a plugin that is missing or wedged is backed off for PROGRESS_RETRY
+    rather than costing every /rows request and every SSE frame the full timeout."""
+    if time.monotonic() < _PROGRESS_DOWN.get(home, 0):
+        return None
+    try:
+        lines = sock_call({"op": "progress", "session": session}, PROGRESS_TIMEOUT, home, progress_paths(home))
+    except SockDown:
+        _PROGRESS_DOWN[home] = time.monotonic() + PROGRESS_RETRY
+        return None
+    for d in lines:
+        if d.get("type") == "progress" and isinstance(d.get("sessions"), dict):
+            _PROGRESS_DOWN.pop(home, None)
+            st = d["sessions"].get(session)
+            if not isinstance(st, dict):
+                return None
+            stage = st.get("stage") if st.get("stage") in PROGRESS_STAGES else "wait"
+            return {"stage": stage, "stage_ts": st.get("stage_ts") if isinstance(st.get("stage_ts"), (int, float)) else None,
+                    "reasoning_chars": st.get("reasoning_chars") if isinstance(st.get("reasoning_chars"), int) else 0,
+                    "text_chars": st.get("text_chars") if isinstance(st.get("text_chars"), int) else 0,
+                    **({"thinking": st["thinking"][-THINK_CAP:]} if isinstance(st.get("thinking"), str) and st.get("open") else {}),
+                    "open": bool(st.get("open"))}
+    _PROGRESS_DOWN[home] = time.monotonic() + PROGRESS_RETRY   # answered, but not with a progress line
+    return None
+
+
+def turn_progress(args, session, st):
+    """What the model is doing right now for a turn in flight, from the bundled plugin, or None when it
+    isn't installed or has nothing live to say. Only a turn this page did not send needs it: one it did
+    send streams tokens straight into the page.
+
+    Two gates. The plugin's stream must still be open, or its record is just the last call's leftovers.
+    And the database must still say the model is the one working: once it has written a tool call, the
+    tool is the later and more specific fact, and the plugin's own stream may not have closed yet."""
+    if not st or st["phase"] != "model" or session == "*":
+        return None
+    p = socket_progress(session, getattr(args, "home", HOME))
+    return p if p and p["open"] else None
+
+
+def prog_stamp(p):
+    """A comparable fingerprint of a progress payload, for "has the page anything new to draw". The stage
+    and the counts, not the timer: the page ticks that itself from stage_ts."""
+    return p and (p["stage"], p["reasoning_chars"], p["text_chars"], p.get("thinking"))
+
+
+def watch_progress(p):
+    """Should /events keep asking the plugin for this session? Yes while there is a turn to watch: the
+    plugin's own stage, or a turn in flight per the database. The user row lands before the model's
+    stream starts, so a turn can be busy for a long time with the plugin still reporting nothing, and
+    that wait is exactly what this feature is for: gating on the stage alone would miss it."""
+    return bool(p["progress"]) or bool(p["waiting"])
 
 
 def socket_cmd(text, home=HOME):
@@ -1135,13 +1600,28 @@ def auth_config(env=None):
     header = env.get("OKO_TAIL_AUTH_HEADER", "").strip()
     if header and not re.fullmatch(r"[A-Za-z0-9-]{1,64}", header):
         raise ValueError("OKO_TAIL_AUTH_HEADER must be a header name, e.g. X-Authentik-Username")
+    secret_header = env.get("OKO_TAIL_PROXY_SECRET_HEADER", "X-Oko-Tail-Proxy-Secret").strip()
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", secret_header):
+        raise ValueError("OKO_TAIL_PROXY_SECRET_HEADER must be a header name, e.g. X-Oko-Tail-Proxy-Secret")
     nets = [ipaddress.ip_network(n.strip(), strict=False)
             for n in (env.get("OKO_TAIL_TRUSTED_PROXIES") or "127.0.0.0/8,::1").split(",") if n.strip()]
     if header and not nets:
         raise ValueError("OKO_TAIL_TRUSTED_PROXIES lists no addresses, so the header could never be trusted")
     if any(getattr(n, "network_address", None) and getattr(n.network_address, "ipv4_mapped", None) for n in nets):
         raise ValueError("write IPv4 proxies as plain IPv4 (127.0.0.1), not ::ffff:127.0.0.1; peers are matched that way")
-    return {"user": user, "password": pw, "header": header, "proxies": nets}
+    return {"user": user, "password": pw, "header": header, "proxies": nets,
+            "secret_file": os.path.expanduser(env.get("OKO_TAIL_PROXY_SECRET_FILE", "")), "secret_header": secret_header}
+
+
+def proxy_secret(auth):
+    """Read fresh bytes for forward auth and --check. Missing/unreadable/empty files fail closed."""
+    if auth["secret_file"]:
+        try:
+            with open(auth["secret_file"], "rb") as f:
+                return f.read().rstrip(b"\r\n")
+        except OSError:
+            pass
+    return b""
 
 
 def auth_mode(auth):
@@ -1169,7 +1649,16 @@ def authorized(auth, headers, peer):
         except ValueError:
             ip = None
         if ip and any(ip.version == n.version and ip in n for n in auth["proxies"]):
-            return True
+            if not auth["secret_file"]:
+                return True
+            secret = proxy_secret(auth)
+            try:
+                # HTTP headers are decoded as Latin-1 by http.server: compare the original bytes.
+                supplied = (headers.get(auth["secret_header"]) or "").encode("latin-1")
+            except UnicodeEncodeError:
+                supplied = b""
+            if secret and hmac.compare_digest(supplied, secret):
+                return True
     if auth["user"]:
         kind, _, cred = (headers.get("Authorization") or "").partition(" ")
         if kind.lower() != "basic":
@@ -1215,7 +1704,7 @@ def handle_post(args, path, origin, host, raw, root=SKILLS):
     sess, msg = body.get("session"), body.get("message")
     if not isinstance(sess, str) or not SID.fullmatch(sess):
         return 400, {"error": "bad session"}
-    if not known_session(args.db, sess):
+    if sess not in known_sessions(args.db):
         return 400, {"error": "unknown session"}
     imgs = (body.get("images") or []) if path == "/say" else []
     if not isinstance(imgs, list) or len(imgs) > MAX_IMAGES or not all(isinstance(u, str) and IMAGE.fullmatch(u) for u in imgs):
@@ -1252,7 +1741,7 @@ def serve(args):
     if not is_loopback(HOST) and not (auth["user"] or auth["header"]):
         sys.exit(f"oko-tail: OKO_TAIL_HOST={HOST} is reachable from other machines and there's no login. "
                  "Set OKO_TAIL_USER + OKO_TAIL_PASSWORD or OKO_TAIL_AUTH_HEADER first (README, Security).")
-    # Plain http. Basic auth off-box wants TLS in front (a proxy, Tailscale); no built-in TLS.
+    # ponytail: plain http. Basic auth off-box wants TLS in front (a proxy, Tailscale); no built-in TLS.
     srv = ThreadingHTTPServer
     if ":" in HOST:
         class srv(ThreadingHTTPServer):
@@ -1327,7 +1816,7 @@ def handler(args, auth, hosts=None):
                 t = skill_text(q.get("name", [""])[0], getattr(args, "skills", SKILLS))
                 data, ctype = json.dumps({"text": t} if t is not None else {"error": "no such skill"}).encode(), "application/json"
             elif urlparse(self.path).path == "/queue":
-                items = socket_queue(getattr(args, "home", HOME)) if sess == main_session(args.db) else None
+                items = socket_queue(getattr(args, "home", HOME), args.width) if sess == main_session(args.db) else None
                 data, ctype = json.dumps({"items": items or [], "socket": items is not None}).encode(), "application/json"
             elif urlparse(self.path).path == "/cmds":
                 cmds = socket_commands(getattr(args, "home", HOME)) if sess == main_session(args.db) else None
@@ -1335,6 +1824,29 @@ def handler(args, auth, hosts=None):
                                    "skills": skills_list(args.env, args.gateway),
                                    "gateway": gateway_up(args.gateway)}).encode()
                 ctype = "application/json"
+            elif urlparse(self.path).path == "/brand":
+                b = brand()
+                if not b:
+                    return self.send_data(b"no brand image (OKO_TAIL_BRAND)\n", "text/plain; charset=utf-8", 404)
+                data, ctype = b
+            elif urlparse(self.path).path == "/img":
+                try:
+                    im = image_of(args.db, int(q["id"][0]), int(q["n"][0]), getattr(args, "home", HOME))
+                except (KeyError, ValueError, OverflowError):   # OverflowError: an id past sqlite's 2^63
+                    return self.send_data(b"bad image query\n", "text/plain; charset=utf-8", 400)
+                except sqlite3.Error:
+                    im = None
+                if not im:
+                    return self.send_data(b"no such image\n", "text/plain; charset=utf-8", 404)
+                data, ctype, etag = im
+                if not etag:
+                    return self.send_data(data, ctype, cache="private, max-age=86400")   # a data URL is fixed in its row
+                if self.headers.get("If-None-Match") == etag:   # a path can change: revalidate by mtime + size
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", "private, no-cache")
+                    return self.end_headers()
+                return self.send_data(data, ctype, cache="private, no-cache", etag=etag)
             elif urlparse(self.path).path in STATIC:
                 data, ctype = web(urlparse(self.path).path[1:]).encode(), STATIC[urlparse(self.path).path]
             else:
@@ -1344,12 +1856,8 @@ def handler(args, auth, hosts=None):
         def end_headers(self):
             self.send_header("X-Frame-Options", "DENY")            # never framed: no clickjacking a Send or Stop
             self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Referrer-Policy", "no-referrer")     # remote http(s) images never learn our URL
             super().end_headers()
-
-        def version_string(self):
-            return "oko-tail"                                      # no Python version in the Server header
 
         def do_POST(self):
             if not self.gate():
@@ -1365,10 +1873,13 @@ def handler(args, auth, hosts=None):
                                     self.rfile.read(n) if n > 0 else b"")
             return self.send_data(json.dumps(out).encode(), "application/json", code)
 
-        def send_data(self, data, ctype, code=200):
+        def send_data(self, data, ctype, code=200, cache="no-store", etag=None):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", cache)
+            if etag:
+                self.send_header("ETag", etag)
             self.end_headers()
             try:
                 self.wfile.write(data)
@@ -1386,7 +1897,7 @@ def handler(args, auth, hosts=None):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
-            stamp, seen, beat, first = None, None, time.monotonic(), True
+            stamp, seen, beat, first, pstamp, ppoll, busy = None, None, time.monotonic(), True, None, 0.0, False
             try:
                 self.wfile.write(b"retry: 2000\n\n")
                 while True:
@@ -1395,6 +1906,7 @@ def handler(args, auth, hosts=None):
                         moved, stamp, seen = ver != seen, now, ver
                         while True:  # drain in 200-row pages
                             p = payload(args, after, sess)
+                            pstamp, busy = prog_stamp(p["progress"]), watch_progress(p)
                             if p["rows"]:
                                 after = p["rows"][-1]["id"]
                             if first or p["rows"] or moved:
@@ -1405,8 +1917,29 @@ def handler(args, auth, hosts=None):
                             if len(p["rows"]) < 200:
                                 break
                     elif time.monotonic() - beat > 15:  # heartbeat carries state so a stale turn flips to idle
-                        self.wfile.write(f"id: {after}\ndata: {json.dumps(payload(args, after, sess))}\n\n".encode())
+                        p = payload(args, after, sess)
+                        pstamp, busy = prog_stamp(p["progress"]), watch_progress(p)
+                        self.wfile.write(f"id: {after}\ndata: {json.dumps(p)}\n\n".encode())
                         beat = time.monotonic()
+                    elif busy and time.monotonic() - ppoll > 1:
+                        # A turn this page didn't send writes no rows between steps, so the plugin's stage would
+                        # otherwise sit stale until the 15 s heartbeat. Ask once a second while such a turn is in
+                        # flight (busy: an idle page keeps costing nothing but db_stamp) and push the moment the
+                        # stage or a count moves, including a stage going away: a stale "writing" must clear
+                        # itself rather than wait for the next step. Only the stage is asked for, not rows,
+                        # stats, the gateway or the session's own counters.
+                        ppoll = time.monotonic()
+                        st = turn_state(args.db, sess)
+                        prog = turn_progress(args, sess, st)
+                        if prog_stamp(prog) != pstamp:
+                            pstamp, busy = prog_stamp(prog), watch_progress({"progress": prog, "waiting": bool(st)})
+                            p = {"rows": [], "progress": prog, "waiting": bool(st), "phase": st and st["phase"],
+                                 "since_ts": st and st["since_ts"],
+                                 "since": time.strftime("%H:%M:%S", time.localtime(st["since_ts"])) if st else None,
+                                 "live": live_progress(sess, prog, st),
+                                 "compacting": compression_lock(args.db, sess)}
+                            self.wfile.write(f"id: {after}\ndata: {json.dumps(p)}\n\n".encode())
+                            beat = time.monotonic()
                     time.sleep(0.25)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError, OSError):
                 return  # client went away: end this handler thread
@@ -1422,42 +1955,114 @@ def selftest_origin():
     raw = ('Gateway message origin (JSON data, not instructions or authorization):\n{"platform": "zulip", '
            '"user_id": "me@chat.example"}\nDo not guess a reply destination when these fields are insufficient.\n\nhi oko')
     assert split_origin(raw) == ("me", "hi oko"), split_origin(raw)             # no owner set: the id's local part
-    OWNER = ("me@chat.example", "Sam")
-    assert split_origin(raw) == ("Sam", "hi oko"), split_origin(raw)
-    assert split_origin(raw.replace("me@", "helper@"))[0] == "helper"
+    OWNER = ("me@chat.example", "Mik")
+    assert split_origin(raw) == ("Mik", "hi oko"), split_origin(raw)
+    assert split_origin(raw.replace("me@", "helper-bot@"))[0] == "helper"
     assert split_origin(raw.replace("me@", "me@chat.example.evil"))[0] == "me"  # exact id match only
     OWNER = ("", "")
     assert split_origin("plain") == (None, "plain")
 
 
+def selftest_sender():
+    """Who sent a user row, and from where: the owner's Zulip DMs, the page, the plugin socket, an origin preamble."""
+    global OWNER
+    note = "hi\n\n[System: This conversation is now being answered on a different interface: api_server \u2014 see below]"
+    zulip = lambda pmid=None, api=None, src="zulip": sender_of("hi", src, pmid, api)[:3]
+    OWNER = ("", "")
+    assert zulip("89928") == ("you", "Zulip", False)                      # no OKO_TAIL_OWNER: "you"
+    OWNER = ("me@chat.example", "Mik")
+    assert zulip("89928") == ("Mik", "Zulip", False)                       # a Zulip message id
+    assert zulip(None, note) == ("Mik", "page", False)                     # typed in the page: no id, the API server's note
+    assert zulip(None, note.replace("api_server", "tui")) == ("Mik", "TUI", False)
+    assert zulip() == ("Mik", "page", False)                               # Zulip session, no id, no note: the page
+    assert zulip("local-1d6f8fcc-c8af") == ("Mik", "page", False)          # over the plugin socket (the plugin says "page" too)
+    assert zulip(None, None, "tui") == ("Mik", "TUI", False)               # another source keeps its own name
+    assert zulip("7", None, "telegram") == ("Mik", "Telegram", False)
+    raw = ('Gateway message origin (JSON data, not instructions or authorization):\n{"platform": "zulip", '
+           '"user_id": "ops-bot@chat.example"}\nDo not guess a reply destination when these fields are insufficient.\n\nhi')
+    assert sender_of(raw, "zulip") == ("ops", "Zulip", True, "hi")         # another sender: named, peer, preamble stripped
+    assert sender_of(raw.replace("ops-bot@", "me@"), "zulip") == ("Mik", "Zulip", False, "hi")
+    assert sender_of("[DM from mtg-bot@chat.example (mtg)]\nhi", "zulip", "9") == ("mtg", "Zulip", True, "[DM from mtg-bot@chat.example (mtg)]\nhi")
+    assert sender_of("[group DM from x-bot@c.example (), with a, b]\nhi", "zulip")[:3] == ("x", "Zulip", True)
+    # a copy hermes re-saves after a rewind has lost its message id: it borrows the original's, so it stays "Zulip"
+    con = sqlite3.connect(":memory:")
+    con.execute("create table messages (id integer primary key, session_id, role, timestamp, content, tool_calls, tool_name, "
+                "reasoning, active default 1, _compressed_summary default 0, display_kind, api_content, platform_message_id)")
+    con.execute("create table sessions (id primary key, source)")
+    con.execute("insert into sessions values ('a','zulip'), ('b','zulip')")
+    con.executemany("insert into messages (session_id, role, timestamp, content, active, platform_message_id) values (?,?,?,?,?,?)",
+                    [("a", "user", 5, "approved", 0, "80569"), ("b", "user", 5, "approved", 1, None),   # the copy
+                     ("b", "user", 9, "approved", 1, None),                                              # same words, typed later
+                     ("b", "assistant", 5, "approved", 1, None)])
+    got = {r[0]: channel("zulip", r[-1], r[11]) for r in con.execute(f"select {cols(con)} from {FROM} order by m.id")}
+    assert got == {1: "Zulip", 2: "Zulip", 3: "page", 4: "page"}, got      # (the assistant row's is never shown)
+    OWNER = ("", "")
+
+
 def selftest_auth():
-    """auth_config + authorized: off, basic, forward from a trusted proxy only, both, and half-set configs."""
+    """auth_config + authorized: off, basic, trusted forward auth with/without a secret, and bad configs."""
     import tempfile
     b = lambda s: "Basic " + base64.b64encode(s.encode()).decode()
     off = auth_config({})
     assert authorized(off, {}, "203.0.113.9") and auth_mode(off) == "none"
-    basic = auth_config({"OKO_TAIL_USER": "sam", "OKO_TAIL_PASSWORD": "pa:ss wörd"})
-    assert authorized(basic, {"Authorization": b("sam:pa:ss wörd")}, "203.0.113.9")
-    for h in ({}, {"Authorization": b("sam:nope")}, {"Authorization": b("bob:pa:ss wörd")}, {"Authorization": b("sam")},
-              {"Authorization": "Basic !!!"}, {"Authorization": "Bearer x"}, {"X-Authentik-Username": "sam"}):
+    basic = auth_config({"OKO_TAIL_USER": "mik", "OKO_TAIL_PASSWORD": "pa:ss wörd"})
+    assert authorized(basic, {"Authorization": b("mik:pa:ss wörd")}, "203.0.113.9")
+    for h in ({}, {"Authorization": b("mik:nope")}, {"Authorization": b("bob:pa:ss wörd")}, {"Authorization": b("mik")},
+              {"Authorization": "Basic !!!"}, {"Authorization": "Bearer x"}, {"X-Authentik-Username": "mik"}):
         assert not authorized(basic, h, "127.0.0.1"), h
     assert "pa:ss" not in auth_mode(basic)
     fwd = auth_config({"OKO_TAIL_AUTH_HEADER": "X-Authentik-Username"})
-    assert authorized(fwd, {"X-Authentik-Username": "sam"}, "127.0.0.1")
-    assert authorized(fwd, {"X-Authentik-Username": "sam"}, "::ffff:127.0.0.1") and authorized(fwd, {"X-Authentik-Username": "sam"}, "::1")
-    assert not authorized(fwd, {"X-Authentik-Username": "sam"}, "192.168.1.5")      # not a trusted proxy: a forged header
+    assert authorized(fwd, {"X-Authentik-Username": "mik"}, "127.0.0.1")
+    assert authorized(fwd, {"X-Authentik-Username": "mik"}, "::ffff:127.0.0.1") and authorized(fwd, {"X-Authentik-Username": "mik"}, "::1")
+    assert not authorized(fwd, {"X-Authentik-Username": "mik"}, "192.168.1.5")      # not a trusted proxy: a forged header
     assert not authorized(fwd, {"X-Authentik-Username": " "}, "127.0.0.1") and not authorized(fwd, {}, "127.0.0.1")
-    lan = auth_config({"OKO_TAIL_AUTH_HEADER": "Remote-User", "OKO_TAIL_TRUSTED_PROXIES": "172.16.0.0/24, fd00::/8",
-                       "OKO_TAIL_USER": "sam", "OKO_TAIL_PASSWORD": "pw"})
-    assert authorized(lan, {"Remote-User": "a"}, "172.16.0.7") and not authorized(lan, {"Remote-User": "a"}, "127.0.0.1")
-    assert authorized(lan, {"Authorization": b("sam:pw")}, "198.51.100.1")              # either one lets you in
+    lan = auth_config({"OKO_TAIL_AUTH_HEADER": "Remote-User", "OKO_TAIL_TRUSTED_PROXIES": "10.0.0.0/24, fd00::/8",
+                       "OKO_TAIL_USER": "mik", "OKO_TAIL_PASSWORD": "pw"})
+    assert authorized(lan, {"Remote-User": "a"}, "10.0.0.7") and not authorized(lan, {"Remote-User": "a"}, "127.0.0.1")
+    assert authorized(lan, {"Authorization": b("mik:pw")}, "198.51.100.1")              # either one lets you in
     pf = os.path.join(tempfile.mkdtemp(), "pw")
     with open(pf, "w") as f:
         f.write("from-a-file\n")
-    assert auth_config({"OKO_TAIL_USER": "sam", "OKO_TAIL_PASSWORD_FILE": pf})["password"] == "from-a-file"
-    for bad in ({"OKO_TAIL_USER": "sam"}, {"OKO_TAIL_PASSWORD": "pw"}, {"OKO_TAIL_USER": "a:b", "OKO_TAIL_PASSWORD": "pw"},
+    assert auth_config({"OKO_TAIL_USER": "mik", "OKO_TAIL_PASSWORD_FILE": pf})["password"] == "from-a-file"
+    with tempfile.TemporaryDirectory() as directory:
+        sf = os.path.join(directory, "proxy-secret")
+        for name in ("X-Oko-Tail-Proxy-Secret", "X-Dashboard-Secret"):
+            cfg = {"OKO_TAIL_AUTH_HEADER": "Remote-User", "OKO_TAIL_PROXY_SECRET_FILE": sf}
+            if name != "X-Oko-Tail-Proxy-Secret":
+                cfg["OKO_TAIL_PROXY_SECRET_HEADER"] = name
+            secured = auth_config(cfg)
+            with open(sf, "wb") as f:
+                f.write(b"test-only \xff\r\n")
+            right = {"Remote-User": "me", name: "test-only \xff"}
+            assert authorized(secured, right, "127.0.0.1")
+            assert authorized(secured, right, "::ffff:127.0.0.1") and authorized(secured, right, "::1")
+            assert not authorized(secured, right, "203.0.113.1")             # secret does not replace IP trust
+            for headers in ({"Remote-User": "me"}, {"Remote-User": "me", name: "wrong"},
+                            {name: "test-only \xff"}, {**right, "Remote-User": " "},
+                            {**right, name: "test-only \xff "}, {**right, name: "\u2603"}):
+                assert not authorized(secured, headers, "127.0.0.1"), headers
+            if name != "X-Oko-Tail-Proxy-Secret":
+                assert not authorized(secured, {"Remote-User": "me", "X-Oko-Tail-Proxy-Secret": "test-only \xff"}, "127.0.0.1")
+            with open(sf, "wb") as f:
+                f.write(b"rotated")
+            assert not authorized(secured, right, "127.0.0.1")             # no cached secret
+            right[name] = "rotated"
+            assert authorized(secured, right, "127.0.0.1")
+            both = auth_config({**cfg, "OKO_TAIL_USER": "mik", "OKO_TAIL_PASSWORD": "pw"})
+            assert authorized(both, {"Authorization": b("mik:pw")}, "203.0.113.1")  # basic is independent
+            for contents in (b"", b"\n"):
+                with open(sf, "wb") as f:
+                    f.write(contents)
+                assert not authorized(secured, {"Remote-User": "me", name: ""}, "127.0.0.1")
+            os.unlink(sf)
+            assert not authorized(secured, right, "127.0.0.1")
+            assert authorized(both, {"Authorization": b("mik:pw")}, "203.0.113.1")
+            secured["secret_file"] = directory                          # unreadable as a regular file
+            assert not authorized(secured, right, "127.0.0.1")
+    for bad in ({"OKO_TAIL_USER": "mik"}, {"OKO_TAIL_PASSWORD": "pw"}, {"OKO_TAIL_USER": "a:b", "OKO_TAIL_PASSWORD": "pw"},
                 {"OKO_TAIL_AUTH_HEADER": "X-Bad Header"}, {"OKO_TAIL_AUTH_HEADER": "X", "OKO_TAIL_TRUSTED_PROXIES": "nope"},
                 {"OKO_TAIL_AUTH_HEADER": "X", "OKO_TAIL_TRUSTED_PROXIES": " , "},
+                {"OKO_TAIL_PROXY_SECRET_HEADER": "X-Bad Header"}, {"OKO_TAIL_PROXY_SECRET_HEADER": ""},
                 {"OKO_TAIL_AUTH_HEADER": "X", "OKO_TAIL_TRUSTED_PROXIES": "::ffff:127.0.0.1"}):
         try:
             auth_config(bad)
@@ -1472,7 +2077,7 @@ def selftest_auth():
     for h in ("evil.example", "evil.example:9120", "tail.example.com.evil.example", "", None, ":9120"):
         assert not host_ok(names, h), h                                     # a DNS-rebound page carries its own name
     assert not host_ok(host_names("", "127.0.0.1"), "tail.example.com")     # default: loopback names only
-    assert host_ok(host_names("*", "127.0.0.1"), "anything.example") and host_ok(host_names("", "172.16.0.5"), "172.16.0.5:9120")
+    assert host_ok(host_names("*", "127.0.0.1"), "anything.example") and host_ok(host_names("", "10.0.0.5"), "10.0.0.5:9120")
 
 
 def selftest_http(A):
@@ -1491,7 +2096,7 @@ def selftest_http(A):
             return e.code, e.headers, b""
     good = {"Authorization": "Basic " + base64.b64encode(b"u:selftest-only").decode()}
     try:
-        for path in ("/", "/app.js", "/rows?session=s", "/ctx?session=s", "/cmds", "/events?session=s"):
+        for path in ("/", "/app.js", "/rows?session=s", "/ctx?session=s", "/cmds", "/events?session=s", "/img?id=1&n=0"):
             code, h, _ = hit(path)
             assert code == 401 and h.get("WWW-Authenticate", "").startswith("Basic "), (path, code)
         assert hit("/say", data=b'{"session":"s","message":"hi"}')[0] == 401
@@ -1500,22 +2105,139 @@ def selftest_http(A):
         assert hit("/say", {**good, "Content-Type": "text/plain"}, say)[0] == 415
         assert hit("/say", {**good, "Content-Type": "application/json", "Origin": "null"}, say)[0] == 403
         assert hit("/say", {**good, "Content-Type": "application/json; charset=utf-8"}, say)[0] == 400   # past both gates
-        hd = hit("/", good)[1]
-        assert (hd["X-Frame-Options"], hd["X-Content-Type-Options"], hd["Server"]) == ("DENY", "nosniff", "oko-tail"), hd
+        assert hit("/", good)[1]["X-Frame-Options"] == "DENY" and hit("/", good)[1]["Referrer-Policy"] == "no-referrer"
+        assert hit("/img?id=1&n=0", good)[1]["Referrer-Policy"] == "no-referrer"
         assert hit("/rows?session=s", {**good, "Host": "rebound.example:9120"})[0] == 421     # before auth, too
         assert hit("/say", {**good, "Host": "rebound.example", "Content-Type": "application/json"}, say)[0] == 421
         assert hit("/rows?session=s", {"Authorization": "Basic " + base64.b64encode(b"u:wrong").decode()})[0] == 401
         assert hit("/rows?session=s", good)[0] == 200 and hit("/", good)[0] == 200
+        assert hit("/img?id=1&n=0", good)[0] == 404                                         # no image there
+        for bad in ("/img?id=x&n=0", "/img?n=0", f"/img?id={1 << 64}&n=0"):
+            assert hit(bad, good)[0] == 400, bad                                            # bad query, past 2^63 too
         assert hit("/rows?session=s", {"Remote-User": "me"})[0] == 200          # loopback is a trusted proxy
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            auth["secret_file"] = os.path.join(directory, "proxy-secret")
+            with open(auth["secret_file"], "wb") as f:
+                f.write(b"http-test-only\n")
+            for supplied, expected in ((None, 401), ("wrong", 401), ("http-test-only", 200)):
+                headers = {"Remote-User": "me"}
+                if supplied is not None:
+                    headers[auth["secret_header"]] = supplied
+                assert hit("/rows?session=s", headers)[0] == expected
+            auth["secret_file"] = ""
         code, h, body = hit("/events?session=s", good)
         assert code == 200 and h["Content-Type"] == "text/event-stream" and body.startswith(b"retry:"), body
     finally:
         srv.shutdown()
 
 
+def selftest_images(tmp):
+    """Images in the transcript: multimodal content, cache paths in a user's text, an assistant reply's own
+    MEDIA: attachments (with the host-home remap), image paths a tool call reads."""
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+    durl = "data:image/png;base64," + base64.b64encode(png).decode()
+    pic, txt = os.path.join(tmp, "cat.png"), os.path.join(tmp, "fake.png")
+    with open(pic, "wb") as f:
+        f.write(png)
+    with open(txt, "w") as f:
+        f.write("not an image")
+    spaced = os.path.join(tmp, "my cat.png")
+    with open(spaced, "wb") as f:
+        f.write(png)
+    # the agent's host hermes home (what the DB records) vs. this container's mount of it. The host path does NOT
+    # exist here (that is the bug: the container mounts the home at a different place), only the mount holds the file.
+    hosthome, home = os.path.join(tmp, "hosthome"), os.path.join(tmp, "container")
+    os.makedirs(os.path.join(home, "cache", "scratch"))
+    hp = os.path.join(hosthome, "cache", "scratch", "river.png")   # the host path a reply names
+    assert not os.path.exists(hp) and not os.path.isdir(hosthome)
+    with open(os.path.join(home, "cache", "scratch", "river.png"), "wb") as f:   # what the mount actually holds
+        f.write(png)
+    J = CONTENT_JSON
+    user = J + json.dumps([{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": durl}},
+                           {"type": "image_url", "image_url": {"url": "https://e.example/a.jpg"}}])
+    tool = J + json.dumps({"_multimodal": True, "text_summary": "seen", "content": [
+        {"type": "text", "text": '{"success": true}'}, {"type": "image", "source": {"type": "base64",
+                                                       "media_type": "image/png", "data": durl.partition(",")[2]}}]})
+    calls = json.dumps([{"function": {"name": "vision_analyze", "arguments": json.dumps({"image_url": pic, "q": "x"})}},
+                        {"function": {"name": "read_file", "arguments": json.dumps({"path": "/w/notes.md"})}},
+                        {"function": {"name": "read_file", "arguments": json.dumps({"path": txt})}}])
+    db = os.path.join(tmp, "img.db")
+    con = sqlite3.connect(db)
+    con.execute("create table messages (id integer primary key, session_id, role, timestamp, content, tool_calls, "
+                "tool_name, reasoning, active default 1, _compressed_summary default 0, display_kind, api_content)")
+    con.execute("create table sessions (id primary key, source, title)")
+    con.executemany("insert into messages (id, session_id, role, timestamp, content, tool_calls, tool_name) "
+                    "values (?,'s',?,1,?,?,?)",
+                    [(1, "user", user, None, None), (2, "assistant", "", calls, None), (3, "tool", tool, None, "vision_analyze"),
+                     (4, "user", f"[The user sent an image~ ...]\n[If you need a closer look, use vision_analyze with "
+                                 f"image_url: {pic} ~]\n\nhi [Image attached at: {pic}]", None, None),
+                     (5, "user", "plain /etc/x.png text", None, None),
+                     (6, "user", f"hi [Image attached at: {spaced}]", None, None),
+                     (7, "user", J + json.dumps([{"type": "text", "text": "big"},   # past SPLIT_BIG: cached, light
+                                                  {"type": "image_url", "image_url": {"url": durl + "A" * (SPLIT_BIG)}}]),
+                      None, None),
+                     # an assistant reply attaching an image: the tag line is hidden, the path is an image ref
+                     (8, "assistant", f"Here's the couch.\nMEDIA:{hp}\n", None, None),
+                     (9, "assistant", f"  `MEDIA:{hp}`  ", None, None),              # indented, backtick-quoted
+                     (10, "assistant", "I wrote MEDIA:not-a-path into the file.", None, None)])
+    con.commit()
+    con.close()
+    rs = {r[0]: r for r in rows_after(db, "s", 0)}
+    u = row_json(rs[1], 0)
+    assert u["content"] == "look" and u["images"] == ["img?id=1&n=0", "https://e.example/a.jpg"], u
+    a = row_json(rs[2], 0)                       # each call's images, numbered after the row's own
+    assert [c["images"] for c in a["tool_calls"]] == [["img?id=2&n=0"], [], ["img?id=2&n=1"]] and a["images"] == [], a
+    t = row_json(rs[3], 0)                       # a multimodal tool result: its text parses, its image rides along
+    assert t["result"] == {"success": True} and t["images"] == ["img?id=3&n=0"], t
+    assert row_json(rs[4], 0)["images"] == ["img?id=4&n=0"]     # enrich mode: the cache path, once
+    assert row_json(rs[5], 0)["images"] == []                  # a path in prose isn't an attachment
+    assert image_of(db, 1, 0) == (png, "image/png", None) and image_of(db, 3, 0) == (png, "image/png", None)
+    assert image_of(db, 2, 0)[:2] == (png, "image/png") and image_of(db, 4, 0)[:2] == (png, "image/png")
+    tag = image_of(db, 2, 0)[2]                  # a path's etag follows the file: changed bytes, new tag
+    assert tag and tag == image_of(db, 4, 0)[2]
+    os.utime(pic, ns=(1, 1))
+    assert image_of(db, 2, 0)[2] not in (None, tag)
+    assert row_json(rs[6], 0)["images"] == ["img?id=6&n=0"] and image_of(db, 6, 0)[:2] == (png, "image/png")  # spaces
+    assert row_json(rs[7], 0)["images"] == ["img?id=7&n=0"] and image_of(db, 7, 0)[1:] == ("image/png", None)
+    big = rs[7][3]
+    assert any(v[0] == "big" for v in SPLIT_CACHE.values()) and split_light(big) == ("big", ["data:"])  # parsed once
+    assert durl not in json.dumps(row_json(rs[7], 0))
+    # an assistant MEDIA: line: the tag is hidden from the text, the path becomes the row's image ref
+    m = row_json(rs[8], 0)
+    assert m["content"] == "Here's the couch." and "MEDIA" not in m["content"] and m["images"] == ["img?id=8&n=0"], m
+    assert row_json(rs[9], 0)["images"] == ["img?id=9&n=0"] and row_json(rs[9], 0)["content"] is None  # backticked, only line
+    assert row_json(rs[10], 0)["images"] == [] and row_json(rs[10], 0)["content"].startswith("I wrote MEDIA:")
+    # the literal host path is nowhere here: the ref remaps onto the container's mount of the hermes home
+    assert image_of(db, 8, 0) is None                                            # no remap configured: not served
+    assert image_of(db, 8, 0, home, hosthome) == (png, "image/png", image_of(db, 8, 0, home, hosthome)[2]), "remap"
+    assert image_of(db, 9, 0, home, hosthome)[:2] == (png, "image/png")          # the quoted form remaps too
+    # a ref outside the host home, or a traversal, is refused even with a remap configured
+    assert local_path("/etc/evil.png", home, hosthome) is None
+    assert local_path(os.path.join(hosthome, "..", "secret.png"), home, hosthome) is None
+    # passes the host-home prefix check, but the resolved path escapes the mount: refused after the remap
+    esc = os.path.join(hosthome, "cache", "..", "..", "etc", "evil.png")
+    assert esc.startswith(hosthome + "/") and local_path(esc, home, hosthome) is None
+    assert local_path(pic, home, hosthome) == pic                                # a literal path that IS here wins
+    assert image_of(db, 8, 0, home, "") is None and local_path("/nope.png", home, "") is None
+    assert local_path(os.path.join(home, "cache", "scratch", "river.png"), home, hosthome).endswith("river.png")
+    assert media_refs("no tag here") == ("no tag here", []) and media_refs("MEDIA:/x/y.txt")[0].strip() == "MEDIA:/x/y.txt"
+    assert media_refs(f"a\nMEDIA:{pic}\nb") == ("a\nb", [pic])
+    assert image_of(db, 2, 1) is None            # named .png, isn't one: never served
+    assert image_of(db, 1, 1) is None and image_of(db, 1, 9) is None and image_of(db, 99, 0) is None
+    assert split_content("plain") == ("plain", []) and split_content(J + "{bad") == ("{bad", [])
+    assert split_content(J + json.dumps({"a": 1})) == ('{"a": 1}', [])
+    assert split_content(J + json.dumps({"_multimodal": True, "text_summary": "s", "content": []})) == ("s", [])
+    assert part_image({"type": "image_url", "image_url": {"url": "javascript:alert(1)"}}) is None
+    assert part_image({"type": "input_image", "image_url": "data:image/gif;base64,R0"}) == "data:image/gif;base64,R0"
+    assert render(rs[1], 0)[2] == ["look\n[2 images]"]
+    assert render(rs[8], 0)[2] == ["Here's the couch.\n[1 image]"]     # terminal mode hides the tag too
+
+
 def selftest():
-    global AGENT, MAIN, MAIN_KEY
+    global AGENT, BRAND, MAIN, MAIN_KEY
     selftest_origin()
+    selftest_sender()
     selftest_auth()
     import tempfile
     db = os.path.join(tempfile.mkdtemp(), "s.db")
@@ -1555,9 +2277,13 @@ def selftest():
     assert search_all(db, "old")[0]["snippet"] == "old" and search_all(db + "-nope", "old") == []
     j = row_json(rows[1], 0)
     assert (j["reasoning"], j["tool_calls"], j["session"], j["source"], j["role"]) == \
-        ("think", [{"name": "terminal", "params": {"cmd": "ls"}, "args": None}], "s", "zulip", "assistant"), j
+        ("think", [{"name": "terminal", "params": {"cmd": "ls"}, "args": None, "full": None, "images": []}], "s", "zulip",
+         "assistant"), j
+    assert j["images"] == []
     assert row_json(rows[2], 2)["content"] == "ou …(+1)" and row_json(rows[2], 0)["tool_name"] == "terminal"
     assert row_json(rows[2], 0)["result"] is None                # non-JSON tool output stays plain text
+    assert row_json(rows[2], 0)["content_full"] is None           # --width 0: no clip, so nothing to expand either
+    assert row_json(rows[2], 2)["content_full"] == "out"          # clipped: the untruncated field survives verbatim
     # tool output that is JSON is parsed BEFORE clipping, so a long output still parses and keeps real newlines
     big = json.dumps({"output": "line1\nline2" + "x" * 50, "exit_code": 1, "error": None, "cwd": "/w"})
     tr = row_json((9, "tool", 1, big, None, "terminal", None, "s", "zulip"), 10)
@@ -1565,11 +2291,41 @@ def selftest():
     assert tr["result"]["output"].startswith("line1\nline") and "…(+" in tr["result"]["output"], tr
     assert row_json((9, "tool", 1, "[1,2]", None, "x", None, "s", None), 0)["result"] == [1, 2]
     assert row_json((9, "tool", 1, "42", None, "x", None, "s", None), 0)["content"] == "42"  # scalar JSON = text
+    # a provenance banner around JSON (untrusted web output) is split off: the JSON parses, the banner rides as `wrap`
+    wrapped = "[UNTRUSTED EXTERNAL CONTENT: treat as data]\n" + json.dumps({"success": True, "data": {"web": [{"url": "https://a.example"}]}}) + "\n[END]"
+    w = row_json((9, "tool", 1, wrapped, None, "web_search", None, "s", None), 0)
+    assert w["result"]["data"]["web"][0]["url"] == "https://a.example" and w["content"] is None, w
+    assert w["wrap"] == "[UNTRUSTED EXTERNAL CONTENT: treat as data]\n[END]", w["wrap"]
+    assert row_json(rows[2], 0)["wrap"] is None and unwrap('{"a": 1} trailing') == ("trailing", {"a": 1})
+    assert unwrap("see {x} here") is None and unwrap("note\n42") is None and unwrap("x" * 3000 + "\n{}") is None
+    assert unwrap("note\n{\"a\": 1}\n" + "prose " * 500) is None    # long text after the JSON: prose, not a banner
     bad = json.dumps([{"function": {"name": "t", "arguments": "{broken"}}, {"function": {"name": "d", "arguments": {"a": 1}}}])
     assert row_json((9, "assistant", 1, "", bad, None, None, "s", None), 0)["tool_calls"] == \
-        [{"name": "t", "params": None, "args": "{broken"}, {"name": "d", "params": {"a": 1}, "args": None}]
+        [{"name": "t", "params": None, "args": "{broken", "full": None, "images": []},
+         {"name": "d", "params": {"a": 1}, "args": None, "full": None, "images": []}]
+    selftest_images(os.path.dirname(db))
     assert clip_tree(list(range(60)), 0)[-1] == "…(+10 more)" and len(clip_tree(list(range(60)), 0)) == 51
     assert calls_of("not json") == [] and calls_of('{"a":1}') == []
+    # expand toggle: a field clipped at width>0 carries an untruncated `_full`/`full` sibling, verbatim (never
+    # HTML-escaped server-side -- the page only ever inserts either side via textContent, same as the preview)
+    assert clip_full("short", 10) == ("short", None)                       # nothing cut -> nothing to expand
+    assert clip_full("x" * 20, 10) == ("x" * 10 + " …(+10)", "x" * 20)     # cut -> preview + full text
+    assert clip_full("x" * 20, 0) == ("x" * 20, None)                     # --width 0: no clip, no expand either
+    huge = cap_full("y" * (FULL_CAP + 50))
+    assert huge.endswith("50 more)") and len(huge) < FULL_CAP + 60        # even "full" has a hard ceiling
+    assert tree_clipped({"a": "x" * 20}, 10) and not tree_clipped({"a": "x" * 5}, 10) and not tree_clipped({"a": "x"}, 0)
+    script = "<script>alert(1)</script>" * 100  # long enough to clip; must pass through row_json unescaped
+    rc = row_json((9, "assistant", 1, script, None, None, None, "s", None), 50)
+    assert rc["content"].startswith("<script>") and rc["content_full"] == script and "&lt;" not in rc["content_full"]
+    rr = row_json((9, "assistant", 1, "", None, None, script, "s", None), 50)
+    assert rr["reasoning_full"] == script and rr["reasoning"] != script  # preview is cut, full is verbatim
+    longargs = json.dumps([{"function": {"name": "t", "arguments": json.dumps({"cmd": "x" * 40})}}])
+    rt = row_json((9, "assistant", 1, "", longargs, None, None, "s", None), 10)
+    assert rt["tool_calls"][0]["params"]["cmd"].endswith(")") and rt["tool_calls"][0]["full"] == \
+        json.dumps({"cmd": "x" * 40}, indent=2, ensure_ascii=False)      # clipped dict args -> full re-serialised JSON
+    rawargs = json.dumps([{"function": {"name": "t", "arguments": "x" * 40}}])
+    ra = row_json((9, "assistant", 1, "", rawargs, None, None, "s", None), 10)
+    assert ra["tool_calls"][0]["args"].endswith(")") and ra["tool_calls"][0]["full"] == "x" * 40  # clipped raw args
     # /ctx: active rows only (compaction deactivates folded ones), the summary row is its own part, biggest first
     con.execute("update messages set active=0 where id=1")
     con.execute("update messages set _compressed_summary=1, content=? where id=2", ("s" * 400,))
@@ -1624,6 +2380,101 @@ def selftest():
     con.execute("insert into messages (session_id, role, timestamp, content, tool_name) values ('s','tool',12,'ok','terminal')")
     con.commit()
     assert payload(A, 8, now=13)["phase"] == "model"              # result written, model reading it
+    # live stage for a turn this page did NOT send: the bundled plugin's progress socket, or nothing at all
+    assert payload(A, 8, now=13)["progress"] is None              # no plugin: the page falls back to the DB phase
+    phome = tempfile.mkdtemp()
+    P = argparse.Namespace(**{**vars(A), "home": phome})
+    ppath = os.path.join(phome, PROGRESS_NAME)
+    psock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    psock.bind(ppath)
+    psock.listen(4)
+
+    def prog_one():
+        c, _ = psock.accept()
+        buf = b""
+        while b"\n" not in buf:
+            buf += c.recv(4096)
+        assert json.loads(buf) == {"op": "progress", "session": "s"}   # the session is asked for by name
+        c.sendall((json.dumps({"type": "progress", "sessions": {"s": {
+            "stage": "think", "stage_ts": 11.5, "reasoning_chars": 4200, "text_chars": 0, "open": True,
+            "thinking": "x" * THINK_CAP + "<tail>", "delta": "never forwarded"}}}) + "\n").encode())
+        c.close()
+
+    threading.Thread(target=prog_one, daemon=True).start()
+    p = payload(P, 8, now=13)
+    assert p["progress"] == {"stage": "think", "stage_ts": 11.5, "reasoning_chars": 4200, "text_chars": 0,
+                             "open": True, "thinking": "x" * (THINK_CAP - 6) + "<tail>"}, p["progress"]
+    assert p["live"]["thinking"] == p["progress"]["thinking"] and p["live"]["run_id"] is None
+    assert live_get("s") == p["live"]
+    updated = live_progress("s", {**p["progress"], "thinking": "next", "stage": "write"}, {"since_ts": 9})
+    assert updated["thinking"] == "next" and updated["stage"] == "write" and updated["text"] == ""
+    assert live_progress("s", None, {"phase": "tool terminal", "since_ts": 9}) is None
+    assert "s" not in LIVE
+    assert prog_stamp(p["progress"]) != prog_stamp({**p["progress"], "thinking": "changed"})
+    gateway = {"status": "running", "thinking": "gateway", "ended": None}
+    with LIVE_LOCK:
+        LIVE["s"] = gateway
+    assert live_progress("s", p["progress"], {"since_ts": 11}) == gateway
+    with LIVE_LOCK:
+        LIVE["s"] = p["live"]
+    assert "never forwarded" not in json.dumps(p["progress"]), p["progress"]
+    for bad in ({"type": "progress", "sessions": {}},                        # the plugin doesn't know this session
+                {"type": "progress", "sessions": {"s": {"stage": "write", "open": False}}},   # its stream closed
+                {"type": "error", "error": "unknown op"}):
+        def answer(d=bad):
+            c, _ = psock.accept()
+            c.recv(4096)
+            c.sendall(json.dumps(d).encode() + b"\n")
+            c.close()
+        threading.Thread(target=answer, daemon=True).start()
+        assert payload(P, 8, now=13)["progress"] is None, bad
+        assert live_get("s") is None
+    psock.close()
+    os.unlink(ppath)          # a bound-then-closed unix socket file lingers, and rebinding it would fail
+    _PROGRESS_DOWN.clear()    # those replies were errors, which back the socket off for PROGRESS_RETRY
+    # a plugin that is only half-typed: an unknown stage reads as wait, missing counts as 0
+    psock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    psock.bind(ppath)
+    psock.listen(4)
+
+    def prog_one_short():
+        c, _ = psock.accept()
+        c.recv(4096)
+        c.sendall(json.dumps({"type": "progress", "sessions": {"s": {"stage": "weird", "open": True}}}).encode() + b"\n")
+        c.close()
+
+    threading.Thread(target=prog_one_short, daemon=True).start()
+    assert payload(P, 8, now=13)["progress"] == {"stage": "wait", "stage_ts": None, "reasoning_chars": 0,
+                                                 "text_chars": 0, "open": True}, payload(P, 8, now=13)["progress"]
+    psock.close()
+    assert payload(argparse.Namespace(**{**vars(A), "home": phome}), 8, now=13, session="*")["progress"] is None
+    assert payload(argparse.Namespace(**{**vars(A), "home": phome}), 6, now=100)["progress"] is None  # idle turn
+    # a plugin that isn't there is backed off, not retried on every request (payload is on the hot path)
+    dead = argparse.Namespace(**{**vars(A), "home": tempfile.mkdtemp()})
+    assert socket_progress("s", dead.home) is None and _PROGRESS_DOWN.get(dead.home, 0) > time.monotonic()
+    assert socket_progress("s", dead.home) is None                 # backed off: no second connect attempt
+    t0 = time.monotonic()
+    for _ in range(50):
+        socket_progress("s", dead.home)
+    assert time.monotonic() - t0 < 0.5, "backoff didn't hold"
+    _PROGRESS_DOWN.clear()
+    con.execute("insert into messages (session_id, role, timestamp, tool_calls) values ('s','assistant',14,?)", (tc,))
+    con.commit()
+    assert payload(P, 8, now=15)["phase"] == "tool terminal"       # a tool call is the later fact: no model stage
+    assert payload(P, 8, now=15)["progress"] is None
+    # /events pushes on this fingerprint: a moved stage or count is news, a moved timer is not (the page ticks it)
+    full = lambda stage, think, write, ts: {"stage": stage, "reasoning_chars": think, "text_chars": write, "stage_ts": ts}
+    assert prog_stamp(None) is None
+    assert prog_stamp(full("think", 5, 0, 1)) == prog_stamp(full("think", 5, 0, 9))      # the timer alone: not news
+    assert prog_stamp(full("think", 5, 0, 1)) != prog_stamp(full("write", 5, 0, 1))      # a stage move: news
+    assert prog_stamp(full("write", 5, 0, 1)) != prog_stamp(full("write", 5, 40, 1))     # a count move: news
+    # /events polls the plugin while there is a turn to watch. The user row lands before the model's
+    # stream starts, so "no stage yet but a turn in flight" must still poll: that long think is the case
+    # this whole feature exists for. Only a genuinely idle session stops asking.
+    assert watch_progress({"progress": None, "waiting": True}) is True
+    assert watch_progress({"progress": full("think", 1, 0, 1), "waiting": True}) is True
+    assert watch_progress({"progress": full("think", 1, 0, 1), "waiting": False}) is True   # stage outlives the row
+    assert watch_progress({"progress": None, "waiting": False}) is False
     PAGE = web("index.html") + web("app.js") + web("app.css")
     assert "innerHTML" not in PAGE and "insertAdjacent" not in PAGE and "__CFG__" in PAGE  # untrusted data via textContent only
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
@@ -1634,6 +2485,17 @@ def selftest():
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
     assert "<b>&" not in pg.split('<script id=cfg')[0] and "&lt;b&gt;&amp;" in pg
     AGENT = "hermes"
+    brand0, BRAND = BRAND, ""                                                   # no OKO_TAIL_BRAND: no mark
+    pg = page(argparse.Namespace(db=db, interval=2.0), "s")
+    assert "__BRAND__" not in pg and "id=brand" not in pg and brand() is None
+    BRAND = os.path.join(os.path.dirname(db), "logo.svg")                      # a configured mark is shown + served
+    with open(BRAND, "wb") as f:
+        f.write(b"<svg/>")
+    pg = page(argparse.Namespace(db=db, interval=2.0), "s")
+    assert '<img id=brand src="brand" alt="">' in pg and brand() == (b"<svg/>", "image/svg+xml")
+    BRAND = os.path.join(os.path.dirname(db), "logo.txt")                      # not an image type: not shown
+    assert brand_type() is None and brand() is None and brand_type("x/Oko.PNG") == "image/png"
+    BRAND = brand0
     evil = "</script><!--<script>"                                              # a title can't break the boot config
     con.execute("update sessions set title=? where id='s'", (evil,))
     con.commit()
@@ -1687,29 +2549,20 @@ def selftest():
     empty = os.path.join(tempfile.mkdtemp(), "empty.db")
     sqlite3.connect(empty).close()
     assert main_session(empty) == "*"                                         # no sessions at all -> all
-    MAIN, MAIN_KEY = "main", "agent:main:zulip:dm:dm:me@z"
+    MAIN, MAIN_KEY = "oko-main", "agent:main:zulip:dm:dm:me@z"
     assert main_session(db) == MAIN                                           # no gateway_routing table yet
     rc = sqlite3.connect(db)
     rc.execute("create table gateway_routing (scope, session_key, entry_json, updated_at)")
     rc.executemany("insert into gateway_routing values ('', ?, ?, ?)", [
         (MAIN_KEY, json.dumps({"session_id": "old"}), 1), (MAIN_KEY, json.dumps({"session_id": "x"}), 2),
-        ("agent:main:zulip:dm:dm:helper-bot@z", json.dumps({"session_id": "s"}), 3)])
+        ("agent:main:zulip:dm:dm:infra-bot@z", json.dumps({"session_id": "s"}), 3)])
     rc.commit()
     assert main_session(db) == "x", main_session(db)
     rc.execute("update gateway_routing set entry_json=? where updated_at=2", (json.dumps({"session_id": "../x"}),))
     rc.commit(); rc.close()
     assert main_session(db) == MAIN                                           # a malformed id is never used
     # compose: the send target must be a session we already show, so a bad id never runs a fresh turn
-    assert known_session(db, "s") and known_session(db, "x") and not known_session(db, "nope")
-    many = os.path.join(tempfile.mkdtemp(), "many.db")                        # older than the picker's newest 30
-    mc = sqlite3.connect(many)
-    mc.execute("create table sessions (id primary key, source, title, started_at, last_activity_at)")
-    mc.execute("create table messages (session_id, active default 1, display_kind)")
-    mc.executemany("insert into sessions values (?, 'tui', null, ?, ?)", [(f"m{i}", i, i) for i in range(31)])
-    mc.executemany("insert into messages (session_id) values (?)", [(f"m{i}",) for i in range(31)] + [("orphan",)])
-    mc.commit(); mc.close()
-    assert "m0" not in {s["id"] for s in sessions_list(many)} and known_session(many, "m0")
-    assert not known_session(many, "orphan")                                  # rows but no sessions entry
+    assert known_sessions(db) == {"s", "x"}
     st, body = start_turn(db, "nope", "hi")                                  # unknown id -> refused, no request
     assert (st, body["error"]) == (400, "unknown session"), (st, body)
     os.environ.pop("API_SERVER_KEY", None)
@@ -1792,8 +2645,8 @@ def selftest_socket(A, post):
             return
         if req["op"] == "queue":
             out({"type": "queue", "busy": True, "items": [
-                {"where": "next", "id": "70426", "page": False, "from": "Sam", "peer": False, "text": "lmk when u get this",
-                 "images": 0, "ts": 1.5}, "junk", {"where": "held", "id": "9", "from": "helper", "peer": True,
+                {"where": "next", "id": "70426", "page": False, "from": "Mik", "peer": False, "text": "lmk when u get this",
+                 "images": 0, "ts": 1.5}, "junk", {"where": "held", "id": "9", "from": "infra", "peer": True,
                  "text": "x" * 3000, "images": "2", "ts": "soon"}]}, {"type": "done", "reason": "finished"})
             return
         text = req["text"]
@@ -1834,9 +2687,11 @@ def selftest_socket(A, post):
         {"name": "usage", "args": "", "desc": "Token usage", "aliases": [], "category": "Info"}], socket_commands(home)
     # queue: run order kept, junk rows dropped, fields typed and capped; no socket -> None
     q = socket_queue(home)
-    assert [(i["where"], i["from"], i["peer"]) for i in q] == [("next", "Sam", False), ("held", "helper", True)], q
-    assert q[0]["text"] == "lmk when u get this" and q[0]["ts"] == 1.5 and len(q[1]["text"]) == 2000
+    assert [(i["where"], i["from"], i["peer"]) for i in q] == [("next", "Mik", False), ("held", "infra", True)], q
+    assert q[0]["text"] == "lmk when u get this" and q[0]["text_full"] is None and q[0]["ts"] == 1.5  # short: nothing to expand
+    assert q[1]["text"] == clip("x" * 3000, 2000) and q[1]["text_full"] == "x" * 3000, q[1]  # clipped: preview + full text
     assert q[1]["images"] == 0 and q[1]["ts"] is None and socket_queue(home + "/nope") is None
+    assert socket_queue(home, 0)[1]["text"] == "x" * 3000 and socket_queue(home, 0)[1]["text_full"] is None  # --width 0
     # a say: any slash command goes out verbatim; message texts come back (blank ones and unknown line types ignored)
     assert cmd("compress", " here 4 ") == (200, {"messages": ["did /compress here 4"], "held": False, "turn": False, "done": "finished"})
     assert seen[-1] == {"op": "say", "text": "/compress here 4"}
@@ -1913,7 +2768,7 @@ def selftest_gateway(db):
             if self.headers.get("Authorization") != "Bearer test":
                 return self.reply(401, {"error": "unauthorized"})
             r = {"/api/sessions/s": {"id": "s", "model": "m"}, "/api/model/options": {"models": ["a"]},
-                 "/v1/skills": {"object": "list", "data": [{"name": "daily-report", "description": "d", "category": "c"}]}}
+                 "/v1/skills": {"object": "list", "data": [{"name": "zbus-report", "description": "d", "category": "c"}]}}
             return self.reply(200, r[self.path]) if self.path in r else self.reply(404, {"error": "nope"})
 
         def do_PATCH(self):
@@ -2048,9 +2903,9 @@ def selftest_gateway(db):
     assert last_user_text(db, "s") == "now"                                  # newest user row, not ours (we never write the DB)
     assert cmd("retry") == (202, {"ok": True}) and settle("s")["message"] == "now"
     assert cmd("skill")[0] == 400 and cmd("skill", "nope")[0] == 400
-    assert cmd("skill", "daily-report summarize today") == (202, {"ok": True})
-    assert settle("s")["message"] == "Use your `daily-report` skill.\n\nsummarize today"
-    assert skills_list(env, g, sk) == [{"name": "daily-report", "desc": "d"}]
+    assert cmd("skill", "zbus-report tell ops") == (202, {"ok": True})
+    assert settle("s")["message"] == "Use your `zbus-report` skill.\n\ntell ops"
+    assert skills_list(env, g, sk) == [{"name": "zbus-report", "desc": "d"}]
     assert [{k: v for k, v in x.items() if k != "dir"} for x in skills_from_dir(sk)] == [{"name": "deep-skill", "desc": "does a thing"}]   # the down-gateway fallback
     assert skills_list("/dev/null", g + "0", sk) == [{"name": "deep-skill", "desc": "does a thing"}]
     selftest_socket(A, post)
@@ -2097,7 +2952,7 @@ if __name__ == "__main__":
     p.add_argument("--env", default=ENV,
                    help="env file holding API_SERVER_KEY (default $OKO_TAIL_ENV, else $HERMES_HOME/.env)")
     p.add_argument("--gateway", default=GATEWAY, help="hermes gateway base URL (default $HERMES_GATEWAY)")
-    p.add_argument("--serve", type=int, metavar="PORT", help="serve the web page on PORT ($OKO_TAIL_HOST, default 127.0.0.1)")
+    p.add_argument("--serve", type=int, metavar="PORT", help="serve the web page on 127.0.0.1:PORT")
     p.add_argument("--check", action="store_true", help="show the resolved config and what works, then exit")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()

@@ -1,0 +1,46 @@
+# test on every push; build pushes an image to this project's registry.
+#   main push  -> :$CI_COMMIT_SHA only
+#   tag v*     -> :release (what the dev compose + watchtower pull) and :$CI_COMMIT_TAG
+# No :latest. Kaniko on an unprivileged runner (no DinD), same job as mikayla/memes.
+stages:
+  - test
+  - build
+
+test:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
+  script:
+    - python3 -m pip install pytest
+    - python3 -m pytest test_auth.py
+    - python3 oko-tail.py --selftest
+    - python3 test-oko-tail-md.py
+    - python3 contrib/hermes-plugin/test-plugin.py
+    - python3 contrib/hermes-plugin/test-context-steward.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - when: on_success
+
+build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - export IMAGE_DESTINATIONS="--destination $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - if [ -n "$CI_COMMIT_TAG" ]; then export IMAGE_DESTINATIONS="$IMAGE_DESTINATIONS --destination $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG --destination $CI_REGISTRY_IMAGE:release"; fi
+    - echo "Building $CI_REGISTRY_IMAGE ref=$CI_COMMIT_REF_NAME -> $IMAGE_DESTINATIONS"
+    - mkdir -p /kaniko/.docker
+    - printf '{"auths":{"%s":{"username":"%s","password":"%s"}}}' "$CI_REGISTRY" "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" > /kaniko/.docker/config.json
+    - >
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      $IMAGE_DESTINATIONS
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+    - if: '$CI_COMMIT_BRANCH == "main"'
