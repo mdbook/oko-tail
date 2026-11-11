@@ -307,14 +307,19 @@ body.offline #compose .box{border-style:dashed}
 .term .imgs{display:flex;flex-wrap:wrap;gap:.4rem;margin:.45rem 0}
 .term .imgs img{width:auto;height:auto;max-width:min(100%,26rem);max-height:18rem;object-fit:contain;background:var(--well)}
 body.dragging #compose .box{border-color:var(--iris);border-style:dashed}
-#send,#stop{border-radius:7px;padding:.45rem .95rem;font:600 .84rem var(--sans);cursor:pointer;border:1px solid transparent;
+#send,#stop,#force{border-radius:7px;padding:.45rem .95rem;font:600 .84rem var(--sans);cursor:pointer;border:1px solid transparent;
  transition:background var(--q) var(--ease),opacity var(--q) var(--ease),transform var(--q) var(--ease)}
 #send{background:var(--iris);color:#10201b}
 #send:hover{background:color-mix(in srgb,var(--iris) 85%,#fff)}
-#send:active,#stop:active{transform:scale(.97)}
+#send:active,#stop:active,#force:active{transform:scale(.97)}
 #send[disabled],body.offline #send{opacity:.4;cursor:default}
 #stop{background:transparent;color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,transparent)}
 #stop:hover{background:color-mix(in srgb,var(--bad) 12%,transparent)}
+/* the explicit interrupt: a filled, higher-contrast Stop, for when the ordinary one can't reach the turn */
+#force{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);
+ border-color:color-mix(in srgb,var(--bad) 60%,transparent)}
+#force:hover{background:color-mix(in srgb,var(--bad) 26%,transparent)}
+#force[disabled]{opacity:.5;cursor:default}
 #cnotes{min-height:1.1em;padding:.3rem .2rem 0;color:var(--dim);font-size:.78rem}
 #cnotes.err{color:var(--bad)}
 #slash{margin-bottom:.4rem;background:var(--panel);border:1px solid var(--rule2);border-radius:8px;box-shadow:0 10px 30px #0008;
@@ -584,6 +589,10 @@ main{position:relative;z-index:1}
 .qb:hover{color:var(--ink);background:var(--rule)}
 .qi.srv{border-style:dashed;padding-right:.7rem;box-shadow:none}.qi.srv .qt{color:var(--dim,var(--faint))}
 .qi.failed{border-color:color-mix(in srgb,var(--bad) 55%,var(--rule2))}.qi.failed .qk{color:var(--bad)}
+/* a steer the agent holds but has not applied: pending, never auto-cleared */
+.qi.steer{border-color:color-mix(in srgb,var(--amber) 45%,var(--rule2));background:color-mix(in srgb,var(--amber) 7%,var(--panel))}
+.qi.steer .qt{color:var(--dim,var(--faint));font-style:italic}
+.qi.srv.stale{opacity:.75}.qi.srv.stale .qk{color:var(--bad)}
 @media(prefers-reduced-motion:no-preference){.qi{animation:enter .32s var(--spring) both}}
 body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
 [data-theme=frost] .qi{background:var(--glass);border-color:var(--glass-bd);border-radius:12px;

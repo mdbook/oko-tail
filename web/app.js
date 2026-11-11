@@ -25,7 +25,7 @@ const isObj=v=>v&&typeof v==='object'&&!Array.isArray(v);
 const empty=v=>v==null||v===''||(Array.isArray(v)&&!v.length)||(isObj(v)&&!Object.keys(v).length);
 const smooth=matchMedia('(prefers-reduced-motion: no-preference)').matches?'smooth':'auto';
 const store={get:(k,d)=>{try{return localStorage.getItem('oko.'+k)??d}catch(e){return d}},
-             set:(k,v)=>{try{localStorage.setItem('oko.'+k,v)}catch(e){}}};
+             set:(k,v)=>{try{localStorage.setItem('oko.'+k,v);return true}catch(e){return false}}};
 function dur(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=String(s%60).padStart(2,'0');
   return h?h+':'+String(m).padStart(2,'0')+':'+x:m+':'+x}
 function took(s){return s<10?s.toFixed(1)+'s':s<60?Math.round(s)+'s':dur(s)}
@@ -996,7 +996,7 @@ if(SINGLE){compose.hidden=false;B.classList.add('composing')} // a turn needs a 
 async function post(path,body){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
+  if(!r.ok)throw Object.assign(new Error(j.error||('HTTP '+r.status)),{status:r.status,code:j.code});
   return j;
 }
 let askedNotify=store.get('asked-notify','');
@@ -1045,50 +1045,130 @@ if(SINGLE){
 // been idle for a moment. Other commands (/status, /stop, /steer, /compress…) run straight away.
 // ponytail: the queue's text survives a reload (localStorage, per session); attached images only live in this tab.
 const queueEl=$('queue'), QK='queue:'+cur;
-let queue=[];try{queue=JSON.parse(store.get(QK,'[]')).filter(q=>q&&typeof q.text==='string')}catch(e){}
+// Neither `accepted` nor `held` acknowledges application to a turn. The external plugin owns that pump;
+// removal from its queue can also mean cancellation, not delivery. Keep a durable receipt BEFORE sending,
+// even if the reply is lost. Never auto-resend or infer delivery from queue absence (including after Stop).
+// Without a correlated application acknowledgement, only explicit dismissal clears these receipts.
+// One storage write transfers a queued message to a receipt, so crash recovery cannot load both owners.
+let queue=[],steers=[];
+try{
+  const saved=JSON.parse(store.get(QK,'[]')), valid=q=>q&&typeof q.text==='string';
+  queue=(Array.isArray(saved)?saved:saved.queue||[]).filter(valid);
+  steers=(Array.isArray(saved)?JSON.parse(store.get('steers:'+cur,'[]')):saved.steers||[]).filter(valid);
+}catch(e){}
 let sending=0, idleSince=0, qFail=null;
-const agentBusy=()=>compacting||!!turn||running(live)||(!!pend&&!pend.row.classList.contains('failed'));
+const agentBusy=()=>compacting||!!turn||running(live)||srvBusy||(!!pend&&!pend.row.classList.contains('failed'));
 const steerable=()=>running(live)&&!!live.run_id;
 // Any turn in the main session, wherever it came from (Zulip, a cron, this page), can be stopped or steered
 // through the agent's own /stop and /steer over the socket; a page-sent turn uses its run id (works without it).
 function viaSock(){return cur===CFG.main&&SOCK&&(!!turn||running(live))&&!compacting}
 function canStop(){return steerable()||viaSock()}
-function syncStop(){const on=canStop(), s=$('stop');if(s.hidden!==on)return;s.hidden=!on;if(queue.length)renderQ() // queue rows offer steer/interrupt only while it's on
-  if(!on&&cnotes.textContent.startsWith('Stopping '))cnote('Stopped.')} // the turn is over: settle the note the Stop click left
+// The explicit interrupt is reachable wherever a cancellation could be attempted, which is WIDER than Stop:
+// it also covers a turn the page can't see in the transcript but the agent says it is busy with (srvBusy, from
+// the agent's own queue reply), which is the state a queued message leaves the page in.
+// That reply proves socket reachability even before the slash-command list has been loaded (SOCK).
+function canForce(){return steerable()||(cur===CFG.main&&(srvBusy||SOCK&&!compacting&&(!!turn||running(live))))}
+// Show or hide a control. `want` is whether it should be VISIBLE; the guard makes a no-op cheap, and
+// `.hidden` is the inverse of what we want.
+function setShown(node,want){const hide=!want;if(node.hidden!==hide)node.hidden=hide}
+function syncStop(){
+  const on=canStop(), onF=canForce(), wasWrong=$('stop').hidden===on;   // the shown state didn't match
+  setShown($('stop'),on);setShown($('force'),onF);
+  // settle the note a Stop click left, once the turn it stopped is really over
+  if(wasWrong&&!on&&cnotes.textContent.startsWith('Stopping '))cnote('Stopped.');
+  if(wasWrong)renderQ()
+}
 let stoppedTurn=null, lastEsc=0;
+// Stop the running turn. Never touches a pending steer: a steer the agent already holds belongs to the agent,
+// and dropping it here is exactly the silent loss this page must not do.
 async function stopTurn(){
-  if(steerable()){await post('/stop',{session:cur});cnote('Stopping '+AG+'…');return}
+  if(steerable()){await post('/stop',{session:cur});cnote('Stopping '+AG+'…'+steerNote());return}
   const was=turn&&turn.since_ts, j=await post('/cmd',{session:cur,name:'stop',args:''});
-  if(j.error)throw new Error(j.error);
+  checkStop(j);
   if(was!=null){stoppedTurn=was;turn=null;syncStop();tick();pump()}
-  cnote((j.messages&&j.messages[0])||'Stopped.');
+  cnote(((j.messages&&j.messages[0])||'Stopped.')+steerNote());
 }
-async function steerTurn(text){
-  if(steerable())await post('/steer',{session:cur,message:text});
-  else{const j=await post('/cmd',{session:cur,name:'steer',args:text});if(j.error)throw new Error(j.error)}
-  cnote('Steered: '+AG+' sees it after its current tool call.');
+// What a stop leaves behind: a steer the agent has not applied yet. Said out loud, never dropped.
+function steerNote(){
+  return steers.length?(' '+steers.length+(steers.length>1?' steers have':' steer has')+' unconfirmed application; kept above.')
+                      :'';
 }
+// The explicit force-interrupt: the ordinary Stop needs to know it can reach the turn (a run id we hold, or a
+// live socket), and while it can't, there is no way to stop a wedged turn from the page at all. This tries
+// the run-id path first, falling back only if our server positively says it never dispatched the cancel.
+// A lost reply may hide a successful cancel. Do not cancel twice:
+// the second /stop could hit the next queued turn. A held/unfinished socket command is NOT a stop ack.
+function checkStop(j){
+  if(j.error||j.held||j.done!=='finished')throw new Error(j.error||'Stop not acknowledged; it may still be pending');
+}
+async function forceInterrupt(){
+  const f=$('force');if(f.disabled)return;f.disabled=true;const was=f.textContent;f.textContent='Interrupting…';
+  const acked=[], failed=[];let fallback=true, unknown=false;
+  if(steerable()){try{await post('/stop',{session:cur});acked.push('the turn\'s run')}catch(err){
+    failed.push(err.message);fallback=err.status===409&&err.code==='oko_no_live_run';unknown=!fallback;
+  }}
+  if(!acked.length&&fallback&&cur===CFG.main&&(SOCK||srvBusy))try{
+    const j=await post('/cmd',{session:cur,name:'stop',args:''});
+    checkStop(j);acked.push('the agent\'s own /stop');
+  }catch(err){failed.push(err.message)}
+  f.disabled=false;f.textContent=was;
+  if(acked.length)cnote('Interrupt requested via '+acked.join(' and ')+'.'+steerNote());
+  else cnote((unknown?'Interrupt status unknown: ':'Couldn\'t interrupt: ')+failed.join('; '),true);
+  syncStop();
+}
+async function steerTurn(text,q=null){
+  if(!text.trim())throw new Error('usage: /steer <message>');
+  const nextQueue=q?queue.filter(x=>x!==q):queue, nextSteers=[...steers,{text}];
+  if(!saveQ(nextQueue,nextSteers)){
+    const error="Couldn't save, not sent. Browser storage is unavailable or full.";
+    if(!q)throw new Error(error); // the composer restores the original command
+    q.saveError=error;renderQ();cnote(error,true);return;
+  }
+  // Commit the durable ownership transfer before dispatch; a failed write leaves the original queued.
+  if(q&&queue[0]===q)qFail=null;
+  queue=nextQueue;steers=nextSteers;renderQ();
+  try{
+    const j=steerable()?await post('/steer',{session:cur,message:text})
+                         :await post('/cmd',{session:cur,name:'steer',args:text});
+    if(j.error)throw new Error(j.error);
+    cnote((j.held?'Steer queued. ':'Steer requested. ')+'Application is unconfirmed; kept above, never automatically resent.');
+  }catch(err){
+    cnote('Steer delivery is unconfirmed: '+err.message+'. Kept above; check the transcript before sending again.',true);
+  }
+}
+function dropSteer(s){steers=steers.filter(x=>x!==s);saveQ();renderQ()}
 const tryStop=()=>stopTurn().catch(err=>cnote('Couldn\'t stop: '+err.message,true));
-addEventListener('keydown',e=>{ // Esc twice, anywhere, stops the turn; a single Esc keeps its usual meaning
+const tryForce=()=>forceInterrupt().catch(err=>cnote('Couldn\'t interrupt: '+err.message,true));
+addEventListener('keydown',e=>{ // Esc twice, anywhere, stops the turn; a single Esc keeps its usual meaning.
+  // Ctrl (or Cmd) + Esc Esc is the explicit interrupt: it fires whichever cancellation path is reachable.
   if(e.key!=='Escape'||e.repeat)return;
-  if(e.timeStamp-lastEsc<600&&canStop()){lastEsc=0;tryStop()}else lastEsc=e.timeStamp;
+  if(e.timeStamp-lastEsc<600){lastEsc=0;if(e.ctrlKey||e.metaKey)tryForce();else if(canStop())tryStop()}else lastEsc=e.timeStamp;
 },true);
 function startsTurn(text){
   if(!text.startsWith('/'))return true;
   const n=text.slice(1).split(/\s/)[0].toLowerCase();
   return n==='retry'||(CMDS||[]).some(c=>c.kind==='skill'&&c.name.toLowerCase()===n);
 }
-function saveQ(){store.set(QK,JSON.stringify(queue.map(q=>({text:q.text}))))}
+function saveQ(qs=queue,ss=steers){return store.set(QK,JSON.stringify({queue:qs.map(q=>({text:q.text})),steers:ss.map(s=>({text:s.text}))}))}
 function qLabel(){const q=queue.length||sending||agentBusy();sendBtn.textContent=q?'Queue':'Send';
   sendBtn.title=q?AG+' is busy: this waits in the queue and goes when it\'s free (Enter)':'Send (Enter). Shift+Enter for a new line'}
 // The agent's own queue (main session, over the socket): Zulip messages hermes queued behind the running turn
 // or a compaction, and peers' DMs held for idle. None of it is in the transcript until its turn starts.
-let srvQ=[], srvQKey='[]';
+// The agent's own queue is the backend's acknowledgement of what is still PENDING there: an item in
+// `items` has not run yet; absence does not acknowledge application. Two reads must not look alike, so an
+// unreachable socket keeps the last known list and marks it stale rather than clearing the panel: a
+// queued message must never silently vanish from view. Polled while hidden too (one cheap read-only GET),
+// so a backgrounded tab has the queue the moment you look back at it.
+let srvQ=[], srvQKey='[]', srvDown=false, srvBusy=false;
 async function loadSrvQ(){
-  let items=[];
-  if(SINGLE&&cur===CFG.main&&!document.hidden)try{items=(await (await fetch(qs('queue'))).json()).items||[]}catch(e){return}
-  const k=JSON.stringify(items);if(k===srvQKey)return;
-  srvQKey=k;srvQ=items;renderQ();
+  if(!SINGLE||cur!==CFG.main){if(srvQ.length||srvDown||srvBusy){srvQ=[];srvDown=false;srvBusy=false;srvQKey='[]';renderQ()}return}
+  let j=null;
+  try{const r=await fetch(qs('queue'));if(r.ok)j=await r.json()}catch(e){j=null}
+  const down=!j||j.socket!==true||!Array.isArray(j.items); // invalid/error reply is unknown, not "empty"
+  const items=down?srvQ:(j.items||[]);
+  const busy=down?srvBusy:!!j.busy;                   // the agent's own word on being mid-turn
+  const k=JSON.stringify([down,items,busy]);if(k===srvQKey)return;
+  srvQKey=k;srvDown=down;srvBusy=busy;srvQ=items;renderQ();syncStop();
 }
 setInterval(loadSrvQ,3000);loadSrvQ();
 document.addEventListener('visibilitychange',loadSrvQ);
@@ -1102,17 +1182,34 @@ function srvRow(it){
   if(it.ts)r.append(el('span','qk dim',hhmm(it.ts)));
   return r;
 }
+// The existing socket/gateway protocols have no correlated application ack: explicitly visible pending.
+function steerRow(s){
+  const r=el('div','qi steer'), b=(label,title,fn)=>{const x=el('button','qb',label);x.type='button';x.title=title;x.onclick=fn;return x};
+  r.append(el('span','qk','steer'),el('span','qk dim','application unconfirmed'),
+           el('span','qt',s.text.replace(/\s+/g,' ').trim()));
+  r.append(b('dismiss','Stop showing it here (this does not cancel it: '+AG+' may still apply it)',
+             ()=>dropSteer(s)));
+  return r;
+}
 function renderQ(){
-  const n=queue.length+srvQ.length;
-  queueEl.replaceChildren(...srvQ.map(srvRow));queueEl.hidden=!n;B.style.setProperty('--qn',n);
+  const n=queue.length+srvQ.length+steers.length;
+  queueEl.replaceChildren(...srvQ.map(srvRow),...steers.map(steerRow));queueEl.hidden=!n;B.style.setProperty('--qn',n);
+  if(srvDown&&srvQ.length){
+    const stale=el('div','qi srv stale');
+    stale.append(el('span','qk','stale'),el('span','qt','the agent\'s queue isn\'t answering: these may already have run'));
+    queueEl.append(stale);
+  }
   queue.forEach((q,i)=>{
-    const r=el('div','qi'+(i===0&&qFail?' failed':'')), b=(label,title,fn)=>{const x=el('button','qb',label);x.type='button';x.title=title;x.onclick=fn;return x};
-    r.append(el('span','qk',i===0?(qFail?'not sent':srvQ.length?'then':'next'):'#'+(i+1+srvQ.length)),el('span','qt',q.text||'(images only)'));
+    const fail=q.saveError||(i===0&&qFail);
+    const r=el('div','qi'+(fail?' failed':'')), b=(label,title,fn)=>{const x=el('button','qb',label);x.type='button';x.title=title;x.onclick=fn;return x};
+    r.append(el('span','qk',q.saveError?"couldn't save, not sent":fail?'not sent':i===0?(srvQ.length?'then':'next'):'#'+(i+1+srvQ.length)),el('span','qt',q.text||'(images only)'));
     if(q.images&&q.images.length)r.append(el('span','qk dim',q.images.length+(q.images.length>1?' images':' image')));
-    if(i===0&&qFail)r.append(b('retry',qFail,()=>{qFail=null;renderQ();pump()}));
+    if(fail)r.append(b('retry',fail,()=>{q.saveError=null;if(i===0)qFail=null;renderQ();pump()}));
     if(canStop()&&q.text&&!q.text.startsWith('/')){
-      r.append(b('steer now','Slip it into the running turn after its current tool call, without stopping it',async()=>{
-        try{await steerTurn(q.text);drop(q)}catch(err){cnote('Couldn\'t steer: '+err.message,true)}}));
+      if(!q.images?.length)r.append(b('steer now','Request a steer; keep a receipt until you confirm it in the transcript',async()=>{
+        if(!queue.includes(q)||sending)return;
+        // Transfer ownership synchronously, before Stop can make pump() see an idle turn.
+        await steerTurn(q.text,q)}));
       r.append(b('interrupt','Stop the running turn and send this right away',async()=>{
         queue=[q,...queue.filter(x=>x!==q)];q.now=true;qFail=null;saveQ();renderQ();
         try{await stopTurn()}catch(err){q.now=false;cnote('Couldn\'t interrupt: '+err.message,true)}}));
@@ -1131,7 +1228,7 @@ async function dispatch(q){
 }
 function pump(){
   qLabel();
-  if(!queue.length||qFail||sending||gatewayUp===false||agentBusy()){idleSince=0;return}
+  if(!queue.length||qFail||queue[0].saveError||sending||gatewayUp===false||agentBusy()){idleSince=0;return}
   if(queue[0].now){idleSince=Date.now()-1500}                       // an interrupt: no settling, it goes now
   else if(!idleSince){idleSince=Date.now();setTimeout(pump,1600);return}   // let a turn that just ended settle first
   if(Date.now()-idleSince<1500)return;
@@ -1159,6 +1256,7 @@ compose.onsubmit=async e=>{
   }
 };
 $('stop').onclick=tryStop;
+$('force').onclick=tryForce;
 
 // slash commands: the gateway's chat API takes "/x" as plain text, so the server maps each one to a real call
 const LOCAL=[{name:'help',args:'',desc:'List the commands that work here',kind:'cmd'},
@@ -1264,7 +1362,8 @@ function editInto(t){ // edit & resend: an earlier message back in the box (what
   msgBox.value=t;msgBox.dispatchEvent(new Event('input'));msgBox.focus();msgBox.setSelectionRange(t.length,t.length);
   cnote('Edit it and send. It goes as a new message.');
 }
-msgBox.addEventListener('focus',()=>{loadCmds()},{once:true});
+// Discover the socket on load: Stop / Esc Esc must work before the composer is first focused.
+loadCmds().then(syncStop);
 // a command's answer is shown here only, as a card in the log (not part of the agent's transcript)
 function card(name,fill){
   const r=el('div','row local'), g=el('div','gut'), bd=el('div','bd'), c=el('div','card');
@@ -1300,6 +1399,8 @@ async function command(raw){
     cnote('');return;
   }
   if(name==='snip'&&c.kind==='cmd'){snipCmd(args);return}
+  if(name==='steer'){await steerTurn(args);return}
+  if(name==='stop'){await stopTurn();return}
   cnote('/'+name+'…');
   const j=c.kind==='skill'?await post('/cmd',{session:cur,name:'skill',args:c.name+(args?' '+args:'')})
                           :await post('/cmd',{session:cur,name,args});

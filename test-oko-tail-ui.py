@@ -73,6 +73,9 @@ def free_port():
 
 
 QITEMS = []  # what the fake socket's queue op reports (the agent's own queue)
+QBUSY = None  # None = derive from QITEMS; False = the agent says it is idle with a non-empty list
+QSOCKET = True  # False = the socket is there but cannot answer the queue op (an older plugin)
+QSTEER_HELD = False  # /steer answers "held" (queued, not delivered) instead of "accepted"
 
 
 def fake_agent(home):
@@ -93,8 +96,12 @@ def fake_agent(home):
         while b"\n" not in buf: buf += c.recv(4096)
         req = json.loads(buf)
         if req["op"] == "queue":                                   # polled by the page: not part of the say log
-            c.sendall(b"".join(json.dumps(x).encode() + b"\n" for x in [{"type": "queue", "busy": bool(QITEMS),
-                      "items": QITEMS}, {"type": "done", "reason": "finished"}])); c.close(); return
+            if not QSOCKET:                                        # an older plugin / a wedged socket: no queue line
+                ds = [{"type": "error", "error": "unknown op 'queue'"}, {"type": "done", "reason": "rejected"}]
+            else:
+                ds = [{"type": "queue", "busy": bool(QITEMS) if QBUSY is None else QBUSY, "session_id": "s",
+                       "items": QITEMS}, {"type": "done", "reason": "finished"}]
+            c.sendall(b"".join(json.dumps(x).encode() + b"\n" for x in ds)); c.close(); return
         said.append(req)
         if req["op"] == "commands":
             ds = [{"type": "commands", "commands": [
@@ -107,7 +114,7 @@ def fake_agent(home):
         elif req["text"] == "/stop":
             ds = [{"type": "accepted", "id": "local-2"}, {"type": "message", "id": "local-2:1", "text": "Stopped."}]
         elif req["text"].startswith("/steer "):
-            ds = [{"type": "accepted", "id": "local-3"}]
+            ds = [{"type": "held" if QSTEER_HELD else "accepted", "id": "local-3"}]
         elif req["text"] == "/context":  # the shape hermes' /context prints (captured live)
             ds = [{"type": "accepted", "id": "local-4"}, {"type": "message", "id": "local-4:1", "text":
                   "🧠 **Context Window**\n\nModel: `vLLM-Main`\nWindow: 200,000 tokens\nIn use: 56,026 / 200,000 (28%)\n"
@@ -520,13 +527,42 @@ try:
         e2(busy); assert e2(stop_shown)
         pg2.fill("#msg", "steer me"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(200)
         pg2.click("#queue .qb:text('steer now')"); pg2.wait_for_timeout(400)
-        assert said[-1] == {"op": "say", "text": "/steer steer me"} and e2(qn) == 0, said[-1]
+        assert said[-1] == {"op": "say", "text": "/steer steer me"} and e2(qn) == 1, said[-1]
+        assert "application unconfirmed" in e2("document.querySelector('#queue .steer').textContent")
+        pg2.click("#queue .steer .qb:text('dismiss')")
         pg2.fill("#msg", "urgent"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(200)
         pg2.click("#queue .qb:text('interrupt')")
         pg2.wait_for_function("document.querySelector('#queue .qi.failed')", timeout=1200)   # sent straight away (fails: no key)
         assert said[-1] == {"op": "say", "text": "/stop"} and not e2(stop_shown) and e2("document.body.dataset.phase") == ""
         assert "Stopped." in e2("document.getElementById('cnotes').textContent") or e2("document.querySelector('#queue .qi.failed')")
         pg2.click("#queue .qb[title^='Remove']")
+        # A steer the agent ACCEPTED but only QUEUED (held, not delivered) must stay visible: the old code
+        # dropped it from the page the moment /steer returned, so a /stop in that window lost it silently.
+        # Queue absence is not an application ack: Stop can remove it before the held-steer pump applies it.
+        QITEMS[:] = []; QSTEER_HELD = True
+        e2(busy); pg2.fill("#msg", "steer-me"); pg2.keyboard.press("Enter"); pg2.wait_for_timeout(200)
+        pg2.click("#queue .qb:text('steer now')"); pg2.wait_for_timeout(400)
+        assert said[-1] == {"op": "say", "text": "/steer steer-me"}, said[-1]
+        assert e2("document.querySelectorAll('#queue .qi:not(.steer)').length") == 0   # gone from the page queue...
+        assert e2("document.querySelectorAll('#queue .qi.steer').length") == 1          # ...but still on screen, pending
+        assert e2("document.querySelector('#queue .qi.steer .qk').textContent") == "steer"
+        assert e2("document.getElementById('force').hidden === false")                  # explicit interrupt is up
+        # the agent still holds it, so a stop must NOT clear it: interrupt, then check it survives
+        QITEMS[:] = [{"where": "held", "id": "local-3", "page": True, "from": "User", "peer": False,
+                      "text": "steer-me", "images": 0, "ts": None}]
+        pg2.click("#force"); pg2.wait_for_timeout(600)
+        assert said[-1] == {"op": "say", "text": "/stop"}, said[-1]
+        assert e2("document.querySelectorAll('#queue .qi.steer').length") == 1, "a stop must not drop a pending steer"
+        # The queue no longer lists it, but application is unknown: still pending, including across reload.
+        QITEMS[:] = []
+        pg2.wait_for_timeout(3500)
+        assert e2("document.querySelectorAll('#queue .qi.steer').length") == 1
+        n = len(said); pg2.reload(); pg2.wait_for_timeout(500)
+        assert e2("document.querySelectorAll('#queue .qi.steer').length") == 1
+        assert not any(r.get("text", "").startswith("/steer ") for r in said[n:])
+        assert any(r.get("op") == "commands" for r in said[n:]), "discover Stop support before composer focus"
+        pg2.click("#queue .steer .qb:text('dismiss')")
+        QITEMS[:] = []; QSTEER_HELD = False
         # the agent's own queue (a Zulip message behind a compaction, a peer's held DM) shows above the page's
         QITEMS[:] = [{"where": "next", "id": "70426", "page": False, "from": "Mik", "peer": False, "text": "lmk when\nu get this",
                       "images": 0, "ts": 1791697926.6}, {"where": "held", "id": "9", "page": False, "from": "infra", "peer": True,
@@ -535,12 +571,40 @@ try:
         assert e2("[...document.querySelectorAll('#queue .srv')].map(r=>[...r.querySelectorAll('span')].map(x=>x.textContent).join('|'))")[1] \
             == "held|infra|<b>hi</b>|1 image", e2("document.getElementById('queue').textContent")
         assert e2("document.querySelector('#queue .srv .qt').textContent") == "lmk when u get this" and not e2("document.querySelector('#queue b')")
+        # the socket's `busy`/`session_id` are part of the queue reply: the page trusts them over its own transcript.
+        QITEMS[:] = [{"where": "queue", "id": "q1", "page": False, "from": "User", "peer": False, "text": "queued while busy"}]
+        QBUSY = True
+        pg2.wait_for_function("document.querySelectorAll('#queue .qi.srv').length === 1", timeout=5000)
+        pg2.wait_for_function("document.getElementById('force').hidden === false", timeout=5000)
+        # the socket stops answering while items are still shown: the list is KEPT and marked stale, never
+        # silently cleared (a queued message must not vanish from view just because a poll failed).
+        QSOCKET = False
+        pg2.wait_for_function("document.querySelector('#queue .qi.srv.stale')", timeout=6000)
+        assert e2("document.querySelectorAll('#queue .qi.srv').length") == 2, e2("document.getElementById('queue').textContent")
+        QSOCKET = True; QBUSY = True
+        pg2.wait_for_function("document.querySelector('#queue .qi.srv.stale') === null", timeout=6000)
+        QITEMS[:] = []; QBUSY = None        # consumed and idle: everything vanishes
+        pg2.wait_for_function("document.getElementById('queue').hidden", timeout=5000)
+        pg2.wait_for_function("document.getElementById('force').hidden === true", timeout=5000)  # nothing to interrupt
+        QITEMS[:] = []; QBUSY = None; QSOCKET = True
         if os.environ.get("UI_SHOT"):
             pg2.screenshot(path=os.environ["UI_SHOT"].replace(".png", "-srvq.png"))
-        QITEMS[:] = []
-        pg2.wait_for_function("document.getElementById('queue').hidden", timeout=5000)
-        e2(busy); n = len(said); pg2.focus("#msg"); pg2.keyboard.press("Escape"); pg2.keyboard.press("Escape"); pg2.wait_for_timeout(400)
+        # Start a real synthetic turn, not just handle(busy): the idle fixture's SSE heartbeat can
+        # replace an injected turn between the two key presses. Keep both backend views busy here.
+        QBUSY = True
+        started = time.time()
+        mid = con.execute("insert into messages (session_id,role,timestamp,content) values ('s','user',?,?)",
+                          (started, "synthetic keyboard stop turn")).lastrowid
+        con.commit()
+        pg2.wait_for_function("canStop() && turn?.since_ts === " + json.dumps(started), timeout=5000)
+        n = len(said); pg2.focus("#msg"); pg2.keyboard.press("Escape")
+        assert e2("document.activeElement.id !== 'msg' && lastEsc > 0"), "first Escape blurs and reaches the capture handler"
+        assert len(said) == n, said[n:]  # a single Escape must not stop the turn
+        pg2.keyboard.press("Escape"); pg2.wait_for_timeout(400)
         assert len(said) == n + 1 and said[-1]["text"] == "/stop", said[n:]
+        assert "Stopped." in e2("document.getElementById('cnotes').textContent")
+        con.execute("delete from messages where id=?", (mid,)); con.commit()
+        QBUSY = None
         # token panel: click the usage line -> context gauge from /context, the biggest rows from /ctx, totals, model chips
         e2("handle({rows:[],gateway:true,stats:{model:'vLLM-Main',input_tokens:1000,output_tokens:50,message_count:7,actual_cost_usd:0.5}})")
         pg2.click("#stats"); pg2.wait_for_function("document.querySelector('#ctxp .cmods .chip')", timeout=4000)

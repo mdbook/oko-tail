@@ -35,6 +35,25 @@ The socket always acts on the agent's main session (the one `OKO_TAIL_MAIN_ROUTE
 sessions, and setups without the plugin, fall back to the gateway's REST API, which covers `/title`,
 `/status`, `/model`, `/fork`, `/retry` and `/skill`, plus `/stop` and `/steer` for turns sent from the page.
 
+### Steer delivery ownership
+
+The command plugin (not included here) owns the held-message pump and runtime cancellation. `accepted`
+means received, `held` means queued, and `done: finished` means the command handler finished, not that a
+steer was applied to model context. A queue item disappearing can mean applied, cancelled or lost during
+a stop-before-delivery race. The HTTP run API's `accepted` steer response is likewise not an application ack.
+This viewer therefore persists an **application unconfirmed** receipt before sending a steer, removes it
+from the ordinary auto-send queue immediately, and never retries it on Stop, poll failure or reload.
+Only the user dismisses it after checking the transcript. This prevents silent loss and client-side duplicate
+recovery without pretending the existing protocol supports exactly-once runtime delivery. Separate identical
+steers keep separate receipts; text matching is not an identity or delivery acknowledgement.
+If a socket send fails after connecting, delivery is uncertain; the server does not fall back to REST and
+send the same command again. Only a connection failure before sending allows that fallback.
+
+Runtime pump changes (retain undelivered steers on cancellation, and acknowledge application by stable ID)
+belong to the compatible command-plugin/gateway maintainer. Deployment and runtime verification belong to
+the operator after independent review; the viewer cannot repair an external pump or verify application
+from queue snapshots alone.
+
 ## Live progress for turns you didn't send
 
 When you send a message from the page, the reply streams back token by token, so the page always knows

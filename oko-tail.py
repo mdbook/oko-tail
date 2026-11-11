@@ -1087,7 +1087,7 @@ def run_action(session, verb, message=None, env_path=ENV, gateway=GATEWAY):
     """stop/steer the turn this page started (we hold its run_id; hermes has no stop-by-session route)."""
     r = live_get(session)
     if not r or not r["run_id"] or r["status"] not in ("starting", "running"):
-        return 409, {"error": "nothing to stop: only turns sent from this page can be stopped" if verb == "stop"
+        return 409, {"code": "oko_no_live_run", "error": "nothing to stop: only turns sent from this page can be stopped" if verb == "stop"
                      else "nothing to steer: only a running turn sent from this page can be steered"}
     st, out = gw("POST", f"/v1/runs/{quote(r['run_id'], safe='')}/{verb}",
                  {} if verb == "stop" else {"message": message}, env_path, gateway)
@@ -1367,7 +1367,7 @@ NOSOCK = "commands need the oko-tail socket (agent offline?)"
 
 
 class SockDown(Exception):
-    """No socket to talk to: file missing, refused, or gone mid-send."""
+    """No connection to the socket: safe for the caller to try the REST fallback."""
 
 
 def sock_paths(home):
@@ -1404,7 +1404,8 @@ def sock_call(req, timeout=CMD_TIMEOUT, home=HOME, paths=None):
         try:
             s.sendall(json.dumps(req).encode() + b"\n")
         except OSError:
-            raise SockDown()
+            # sendall may have written part or all of the request. Falling back could execute it twice.
+            return [{"type": "done", "reason": "closed"}]
         while True:
             left = end - time.monotonic()
             if left <= 0:
@@ -1449,14 +1450,18 @@ def socket_commands(home=HOME):
     return None
 
 
-def socket_queue(home=HOME, width=2000):
-    """What waits to run in the main session (hermes' queue + DMs held for idle; none of it is in state.db yet)
-    -> list in run order, or None when the socket is down or doesn't know the op (an older plugin).
-    `text` clips the same way message fields do (width, a `text_full` sibling when something was actually cut)."""
+def socket_queue_state(home=HOME, width=2000):
+    """The plugin's queue reply -> (items, busy, session_id), all None when the socket is down or the
+    plugin doesn't know the op (an older plugin).
+
+    `busy` and `session_id` matter as much as the list: the agent saying it is busy is what tells the page a
+    message is waiting on it even when the page's own view of the turn (a DB row) says idle, which is exactly
+    the case a queued Zulip message arrives in. Throwing them away made "the agent has something queued" and
+    "the socket can't answer" look the same."""
     try:
         lines = sock_call({"op": "queue"}, 3, home)
     except SockDown:
-        return None
+        return None, None, None
     for d in lines:
         if d.get("type") == "queue" and isinstance(d.get("items"), list):
             out = []
@@ -1468,8 +1473,16 @@ def socket_queue(home=HOME, width=2000):
                            "from": str(i.get("from") or ""), "peer": bool(i.get("peer")), "text": text, "text_full": text_full,
                            "images": i.get("images") if isinstance(i.get("images"), int) else 0,
                            "ts": i.get("ts") if isinstance(i.get("ts"), (int, float)) else None})
-            return out
-    return None
+            sid = d.get("session_id")
+            return out, bool(d.get("busy")), sid if isinstance(sid, str) and SID.fullmatch(sid) else None
+    return None, None, None
+
+
+def socket_queue(home=HOME, width=2000):
+    """What waits to run in the main session (hermes' queue + DMs held for idle; none of it is in state.db yet)
+    -> list in run order, or None when the socket is down or doesn't know the op (an older plugin).
+    `text` clips the same way message fields do (width, a `text_full` sibling when something was actually cut)."""
+    return socket_queue_state(home, width)[0]
 
 
 PROGRESS_STAGES = ("wait", "think", "write")   # what the plugin reports; "tool" is derived from the DB phase
@@ -1816,8 +1829,12 @@ def handler(args, auth, hosts=None):
                 t = skill_text(q.get("name", [""])[0], getattr(args, "skills", SKILLS))
                 data, ctype = json.dumps({"text": t} if t is not None else {"error": "no such skill"}).encode(), "application/json"
             elif urlparse(self.path).path == "/queue":
-                items = socket_queue(getattr(args, "home", HOME), args.width) if sess == main_session(args.db) else None
-                data, ctype = json.dumps({"items": items or [], "socket": items is not None}).encode(), "application/json"
+                if sess == main_session(args.db):
+                    items, busy, sid = socket_queue_state(getattr(args, "home", HOME), args.width)
+                else:
+                    items, busy, sid = None, None, None
+                data, ctype = json.dumps({"items": items or [], "socket": items is not None,
+                                          "busy": bool(busy), "session_id": sid}).encode(), "application/json"
             elif urlparse(self.path).path == "/cmds":
                 cmds = socket_commands(getattr(args, "home", HOME)) if sess == main_session(args.db) else None
                 data = json.dumps({"commands": cmds or COMMANDS, "socket": bool(cmds),
@@ -2126,6 +2143,10 @@ def selftest_http(A):
                     headers[auth["secret_header"]] = supplied
                 assert hit("/rows?session=s", headers)[0] == expected
             auth["secret_file"] = ""
+        # /queue always answers with the same shape, so the page can tell an empty queue from a missing socket:
+        # `socket: false` (no plugin / not the main session) is "unknown", never "nothing is queued".
+        with urllib.request.urlopen(urllib.request.Request(base + "/queue?session=s", headers=good), timeout=5) as r:
+            assert r.status == 200 and json.load(r) == {"items": [], "socket": False, "busy": False, "session_id": None}
         code, h, body = hit("/events?session=s", good)
         assert code == 200 and h["Content-Type"] == "text/event-stream" and body.startswith(b"retry:"), body
     finally:
@@ -2644,7 +2665,7 @@ def selftest_socket(A, post):
                  "args_hint": "", "description": "Token usage", "category": "Info"}]}, {"type": "done", "reason": "finished"})
             return
         if req["op"] == "queue":
-            out({"type": "queue", "busy": True, "items": [
+            out({"type": "queue", "busy": True, "session_id": "20260101_120000_abcd1234", "items": [
                 {"where": "next", "id": "70426", "page": False, "from": "Mik", "peer": False, "text": "lmk when u get this",
                  "images": 0, "ts": 1.5}, "junk", {"where": "held", "id": "9", "from": "infra", "peer": True,
                  "text": "x" * 3000, "images": "2", "ts": "soon"}]}, {"type": "done", "reason": "finished"})
@@ -2692,6 +2713,12 @@ def selftest_socket(A, post):
     assert q[1]["text"] == clip("x" * 3000, 2000) and q[1]["text_full"] == "x" * 3000, q[1]  # clipped: preview + full text
     assert q[1]["images"] == 0 and q[1]["ts"] is None and socket_queue(home + "/nope") is None
     assert socket_queue(home, 0)[1]["text"] == "x" * 3000 and socket_queue(home, 0)[1]["text_full"] is None  # --width 0
+    # the same reply also carries the agent's own busy flag and main session id, which the page needs to tell
+    # "the agent is mid-turn with something queued" from "the socket can't answer". Junk types are dropped.
+    items, busy, sid = socket_queue_state(home)
+    assert (len(items), busy, sid) == (2, True, "20260101_120000_abcd1234"), (len(items), busy, sid)
+    assert socket_queue_state(home + "/nope") == (None, None, None)     # down: unknown, NOT an empty queue
+    assert socket_queue_state(home, 0)[0][1]["text"] == "x" * 3000
     # a say: any slash command goes out verbatim; message texts come back (blank ones and unknown line types ignored)
     assert cmd("compress", " here 4 ") == (200, {"messages": ["did /compress here 4"], "held": False, "turn": False, "done": "finished"})
     assert seen[-1] == {"op": "say", "text": "/compress here 4"}

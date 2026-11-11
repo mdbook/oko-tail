@@ -27,9 +27,15 @@
 - **A message queue.** Anything you send while the agent is busy waits above the input box. You can
   edit or remove it, *steer now* to add it to the running turn, or *interrupt* to stop the turn and
   send it immediately. Queued messages survive a reload and go out one at a time.
+  The main session's backend queue is also shown; a failed poll keeps its last snapshot marked stale.
+  Steers (including typed `/steer`) remain as **application unconfirmed** receipts across Stop, reconnect
+  and reload. They are never automatically resent: receipt/queue acknowledgements do not prove application.
+  Check the transcript before dismissing a receipt or manually sending again. Image messages cannot steer.
 - **Stop any turn.** Stop (or `Esc` `Esc`) uses the agent's own `/stop`, so it works on any turn in
   the main session, wherever it started. Without the [command socket](plugins.md#the-command-socket), it works
   on turns sent from the page.
+  **Interrupt** (or `Ctrl`/`Cmd` + `Esc` `Esc`) also works when only the backend reports busy. It requests
+  cancellation by run ID, or falls back to the command socket, and reports acknowledgement or failure.
 - **A capable input box.** Drafts survive a reload, ↑/↓ recall earlier messages, images can be pasted,
   dropped or attached, and slash commands and skills autocomplete.
 - **Scrolling that stays out of your way.** The view follows new steps only while you're at the
