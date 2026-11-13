@@ -47,6 +47,10 @@ const transcript=parseContext('🧠 **Context Window**\nEstimated context: ~1,23
 assert.equal(transcript.used,1234);assert.equal(transcript.win,null);assert.equal(transcript.estimated,true);
 const over=parseContext(exact.replace('Auto-compresses at: 150,000 (75%)','⚠️ **Over auto-compression threshold (150,000, 75%)**'));
 assert.equal(over.auto,150000);
+const files=parseContext(exact+'\n◐ docs/Project notes.md ~2,345 tokens (truncated)\n○ USER.md ~0 tokens (not loaded)\n✗ MISSING.md ~0 tokens (unreadable)\n⚠️ SOUL.md ~400 tokens (review)');
+assert.deepEqual(files.files.map(f=>f.status),['Loaded','Shortened','Not loaded','Unavailable','Flagged']);
+assert.equal(files.files[1].name,'docs/Project notes.md');assert.equal(files.files[1].tok,2345);
+assert.equal(files.files[2].tok,0);
 for(const t of ['', 'No context data available yet.', '**Unknown format**', 'In use: NaN / 200,000'])assert.equal(parseContext(t),null);
 console.log('context parser selftest ok');
 """

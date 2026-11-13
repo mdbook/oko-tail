@@ -41,13 +41,17 @@
 - **Scrolling that stays out of your way.** The view follows new steps only while you're at the
   bottom. Scroll up to read and it holds its place, with an "N new steps below" button to jump back.
 - **Copy buttons** on replies, reasoning, tool calls and code blocks.
-- **A token panel** (click the usage line, or press `t`): how full the context window is and what's
-  using it (from the agent's own `/context`), the largest messages in context (click one to jump to
-  it), lifetime totals and cost, one-click model switching for the session, and tool health: calls,
-  failures, median and slowest time per tool over the last week.
-  A `~` marks an estimated context count; an unmarked count is the last reported prompt usage.
-  Hermes can return a transcript estimate without a window limit, in which case no percentage is
-  shown. Missing or delayed context details show a status message; reopen the panel to try again.
+- **Context and usage** (click the usage line, or press `t`): the Context tab shows window occupancy,
+  room until auto-compaction, category estimates, expandable context-file details, active messages
+  by kind, and the largest messages (click one to jump to it). The Session totals tab holds lifetime
+  throughput, cost, model switching, and tool activity over the last week. Refresh reads a new
+  snapshot without changing tabs. Close with the close button, Escape, or the background.
+  The panel follows every theme, including frost's light and dark variants.
+  A `~` and an Estimated label distinguish an estimated context count from last reported prompt usage.
+  Hermes can return a transcript estimate without a window limit; no percentage is invented.
+  Category and message estimates can differ from reported usage. Loaded context files are already
+  part of the system prompt; shortened, skipped and unavailable files are labelled individually.
+  Missing or delayed details show a status message; use Refresh after the current turn to try again.
 - **What the agent keeps** (the folder button, or press `b`): its memory notes, what it knows about
   you, its skills (open one to read it), cron jobs, and memory or skill writes staged for your
   approval, read straight from `$HERMES_HOME`. With the [command socket](plugins.md#the-command-socket),

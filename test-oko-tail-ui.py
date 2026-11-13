@@ -609,16 +609,22 @@ try:
         e2("handle({rows:[],gateway:true,stats:{model:'vLLM-Main',input_tokens:1000,output_tokens:50,message_count:7,actual_cost_usd:0.5}})")
         pg2.click("#stats"); pg2.wait_for_function("document.querySelector('#ctxp .cmods .chip')", timeout=4000)
         assert not e2("document.getElementById('ctxp').hidden")
-        assert e2("document.querySelector('#ctxp .cbig-n').textContent") == "56k of 200k tokens (28%)"
-        assert e2("[...document.querySelectorAll('#ctxp section:first-of-type .clegend li span:first-child')].map(x=>x.textContent)") == \
+        assert e2("document.querySelector('#ctxp .cbig-n').textContent") == "56k of 200k tokens"
+        assert e2("document.querySelector('#ctxp .ctx-percent').textContent") == "28%"
+        assert e2("[...document.querySelectorAll('#ctxp .ctx-categories .clegend li span:first-child')].map(x=>x.textContent)") == \
             ["System prompt", "Tool definitions", "Conversation"]          # free space isn't a bar segment
-        assert e2("document.querySelector('#ctxp .cbar b').style.left") == "75%"                  # the auto-compact mark
-        assert "AGENTS.md 1.8k" in e2("document.querySelector('#ctxp section:first-of-type').textContent")
+        assert e2("document.querySelector('#ctxp .ctx-window .cbar b').style.left") == "75%"
+        assert e2("document.querySelector('#ctxp [role=meter]').getAttribute('aria-valuenow')") == "56026"
+        assert "AGENTS.md" in e2("document.querySelector('#ctxp .ctx-files').textContent")
+        assert "~1.8k" in e2("document.querySelector('#ctxp .ctx-files').textContent")
         assert e2("document.querySelectorAll('#ctxp .cbig li').length") > 0 and e2("document.querySelector('#ctxp .ctot').textContent").count("$0.50") == 1
         assert e2("[...document.querySelectorAll('#ctxp .chip')].map(c=>c.textContent+(c.classList.contains('on')?'*':''))") == \
             ["vLLM-Main*", "vLLM-Fast", "big-model", "small-model"] and "+12 more" in e2("document.getElementById('ctxp').textContent")
+        pg2.click("#ctx-tab-totals")
         pg2.click("#ctxp .chip:text('big-model')"); pg2.wait_for_timeout(500)
         assert {"op": "say", "text": "/model big-model --provider openrouter"} in said, said[-3:]
+        assert e2("document.activeElement.id") == "ctx-tab-totals"
+        pg2.click("#ctx-tab-context")
         if os.environ.get("UI_SHOT"):
             pg2.screenshot(path=os.environ["UI_SHOT"].replace(".png", "-ctx.png"))
         e2("document.querySelector('#ctxp .cbig button').click()")                         # a big row -> panel closes, row flashes
@@ -641,6 +647,7 @@ try:
         for response, expected in [
             ({"messages": ["**Context Window**\nIn use: ~56,026 / 200,000 (~28%)"], "done": "finished"}, "~56k of 200k"),
             ({"messages": ["Estimated context: ~1,234 tokens across 5 messages"]}, "~1.2k tokens"),
+            ({"messages": ["In use: 250,000 / 200,000 (125%)\nAuto-compresses at: 150,000"]}, "250k of 200k"),
             ({"messages": ["**A changed upstream format**"]}, "not available yet"),
             ({"messages": [], "done": "finished"}, "not available yet"),
             ({"messages": [], "done": "timeout"}, "timed out"),
@@ -650,6 +657,11 @@ try:
             e2("openCtx()")
             pg2.wait_for_function("text=>document.querySelector('#ctxp section').textContent.includes(text)", arg=expected)
             assert "**" not in e2("document.querySelector('#ctxp section').textContent")
+            if expected == "~1.2k tokens":
+                assert pg2.locator("#ctxp [role=meter]").count() == 0 and pg2.locator("#ctxp .ctx-percent").count() == 0
+            if expected == "250k of 200k":
+                assert e2("document.querySelector('#ctxp .ctx-window .cbar i').style.width") == "100%"
+                assert "threshold reached" in e2("document.querySelector('#ctxp .ctx-headroom').textContent")
         pg2.unroute("**/cmd", context_reply)
         # A database read failure retains a useful status instead of silently dropping both sections.
         pg2.route("**/ctx?*", lambda route: route.fulfill(json=None, body="null", content_type="application/json"))
@@ -657,7 +669,71 @@ try:
         pg2.wait_for_function("document.getElementById('ctxp').textContent.includes('Conversation details are unavailable.')")
         assert "Largest messages are unavailable." in e2("document.getElementById('ctxp').textContent")
         pg2.unroute("**/ctx?*")
+        # HTTP failures never turn into an empty chart or raw response body.
+        pg2.route("**/cmd", lambda route: route.fulfill(status=503, json={"error": "**upstream diagnostics**"}))
+        e2("openCtx()")
+        pg2.wait_for_function("document.querySelector('#ctxp .ctx-window').textContent.includes('could not be reached')")
+        assert "upstream diagnostics" not in e2("document.querySelector('#ctxp .ctx-window').textContent")
+        pg2.unroute("**/cmd")
+        # A late response from before Refresh must not replace the new snapshot.
+        delayed = []
+        def reordered_context(route):
+            if route.request.post_data_json.get("name") != "context":
+                route.continue_()
+            elif not delayed:
+                delayed.append(route)
+            else:
+                route.fulfill(json={"messages": ["In use: 50,000 / 200,000 (25%)"]})
+        pg2.route("**/cmd", reordered_context)
+        e2("openCtx()")
+        pg2.wait_for_timeout(100)
+        assert delayed
+        pg2.click("button[aria-label='Refresh context']")
+        pg2.wait_for_function("document.querySelector('#ctxp .cbig-n')?.textContent.includes('50k')")
+        delayed[0].fulfill(json={"messages": ["In use: 1,000 / 200,000 (1%)"]})
+        pg2.wait_for_timeout(100)
+        assert "50k" in e2("document.querySelector('#ctxp .cbig-n').textContent")
+        pg2.unroute("**/cmd", reordered_context)
+        # Unknown totals stay absent; a known zero cost must not be replaced by an estimate.
+        e2("lastStats={actual_cost_usd:0,estimated_cost_usd:2}; openCtx()")
+        assert "$0.00" in e2("document.querySelector('#ctxp .ctot').textContent")
+        # Every built-in theme, including both system variants of frost, at phone and desktop widths.
+        for theme, scheme in [("", "dark"), ("", "light"), ("frost", "dark"), ("frost", "light"), ("shelf", "light"), ("shelf-dark", "dark")]:
+            pg2.emulate_media(color_scheme=scheme)
+            e2("t=>document.documentElement.dataset.theme=t", theme)
+            for width in (390, 1440):
+                pg2.set_viewport_size({"width": width, "height": 1000})
+                e2("openCtx()")
+                pg2.wait_for_function("document.querySelector('#ctxp .cbig-n')")
+                assert e2("document.querySelector('#ctxp .ctx-window .cbar i').style.width") == "28.013%"
+                assert e2("document.querySelector('#ctxp').scrollWidth<=document.querySelector('#ctxp').clientWidth"), (theme, scheme, width)
+                assert e2("document.querySelector('#ctxp .card').scrollWidth<=document.querySelector('#ctxp .card').clientWidth"), (theme, scheme, width)
+                assert e2("getComputedStyle(document.querySelector('#ctxp .ctx-window .cbar i')).backgroundColor===getComputedStyle(document.querySelector('#ctxp .ctx-tab[aria-selected=true]')).color"), (theme, scheme)
+                pg2.locator("#ctxp .ctx-category").first.click()
+                assert "Instructions" in pg2.locator("#ctxp .ctx-categories").inner_text()
+                pg2.click("#ctxp .ctx-files summary")
+                assert pg2.locator("#ctxp .ctx-file-list").is_visible()
+                pg2.click("#ctx-tab-totals")
+                assert pg2.locator("#ctx-view-totals").is_visible() and not pg2.locator("#ctx-view-context").is_visible()
+                pg2.locator("#ctx-tab-totals").focus(); pg2.keyboard.press("ArrowLeft")
+                assert pg2.locator("#ctx-view-context").is_visible()
+                if os.environ.get("UI_SHOT"):
+                    pg2.screenshot(path=os.environ["UI_SHOT"].replace(".png", f"-ctx-{theme or 'default'}-{scheme}-{width}.png"), animations="disabled")
+                pg2.locator("#ctxp .ctx-foot").scroll_into_view_if_needed()
+                foot_box = pg2.locator("#ctxp .ctx-foot").bounding_box()
+                assert 0 <= foot_box["y"] < 1000, (theme, scheme, width)
+        pg2.set_viewport_size({"width": 1200, "height": 800})
+        pg2.click("#ctx-tab-totals"); pg2.click("button[aria-label='Refresh context']")
+        assert pg2.locator("#ctx-view-totals").is_visible()
+        pg2.click("#ctx-tab-context")
+        # The dialog has an explicit close control and keeps tab focus inside it.
+        pg2.locator("button[aria-label='Refresh context']").focus(); pg2.keyboard.press("Shift+Tab")
+        assert e2("document.getElementById('ctxp').contains(document.activeElement)")
+        pg2.click("button[aria-label='Close context panel']")
+        assert not pg2.locator("#ctxp").is_visible()
+        e2("document.getElementById('stats').focus(); openCtx()")
         pg2.keyboard.press("Escape")
+        assert e2("document.activeElement===document.getElementById('stats')")
         # browse (b): memory split on §, skills open to their SKILL.md, a staged write approves through the socket
         for p, body in (("memories/MEMORY.md", "first **note**\n§\nsecond"), ("skills/ops/ship/SKILL.md", "---\nname: ship\ndescription: d\n---\n# Ship it"),
                         ("pending/memory/ab12cd34.json", json.dumps({"id": "ab12cd34", "action": "add", "summary": "remember <b>x</b>",
@@ -676,14 +752,21 @@ try:
         pg2.click("#brw .bacts .chip:text('Approve')"); pg2.wait_for_timeout(600)
         assert said[-1] == {"op": "say", "text": "/memory approve ab12cd34"}, said[-1]
         pg2.keyboard.press("Escape"); assert e2("document.getElementById('brw').hidden")
-        # approvals: a shell tool sitting >8 s in the main session offers /approve answers; idle hides them
-        e2("handle({rows:[],gateway:true,waiting:true,phase:'tool:terminal',since_ts:Date.now()/1000-20,since:'00:00'})")
+        # Keep the fixture busy in the DB too: an idle SSE heartbeat must not clear the injected
+        # shell-tool state between Approve and Deny (the same race as the keyboard-stop fixture).
+        approval_time = time.time() - 20
+        approval_user = con.execute("insert into messages (session_id,role,timestamp,content) values ('s','user',?,?)",
+                                    (approval_time - 1, "synthetic approval turn")).lastrowid
+        approval_tool = con.execute("insert into messages (session_id,role,timestamp,content,tool_calls) values ('s','assistant',?,?,?)",
+                                    (approval_time, "", call("terminal", {"command": "example command"}))).lastrowid
+        con.commit()
         pg2.wait_for_function("!document.getElementById('appr').hidden", timeout=3000)
         pg2.click("#appr button:text('For this session')"); pg2.wait_for_timeout(500)
         assert said[-1] == {"op": "say", "text": "/approve session"}, said[-1]
         assert e2("[...document.querySelectorAll('#appr button')].map(b=>b.textContent)") == ["Approve", "For this session", "Deny"]
         pg2.click("#appr button:text('Deny')"); pg2.wait_for_timeout(500)                  # held = queued, never "Sent"
         assert "not delivered" in e2("document.getElementById('cnotes').textContent"), e2("document.getElementById('cnotes').textContent")
+        con.execute("delete from messages where id in (?,?)", (approval_user, approval_tool)); con.commit()
         e2("handle({rows:[],gateway:true})"); pg2.wait_for_function("document.getElementById('appr').hidden", timeout=3000)
         # socket gone -> the menu falls back and commands say why instead of "invalid"
         os.unlink(os.path.join(home, "oko-tail.sock"))

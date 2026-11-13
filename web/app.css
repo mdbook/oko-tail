@@ -382,6 +382,72 @@ body.composing main{padding-bottom:11rem}
 .cmods .chip{font-size:.8rem;background:var(--well);border:1px solid var(--rule2);border-radius:99px;padding:.15rem .6rem;cursor:pointer}
 .cmods .chip:hover:not(:disabled){border-color:var(--iris)}.cmods .chip.on{border-color:var(--iris);color:var(--iris)}.cmods .chip:disabled{opacity:.5;cursor:default}
 
+/* Context overview. All colors and fonts come from the active product theme. */
+#ctxp .card{width:min(48rem,100%);padding:0;overflow:hidden}
+#ctxp .card>*{position:relative}
+#ctxp .ctx-head{display:flex;justify-content:space-between;align-items:start;gap:.8rem;padding:1rem 1.2rem .7rem}
+#ctxp .ctx-head h2{margin:0}
+#ctxp .ctx-head p{margin:.2rem 0 0;font-size:.78rem}
+.ctx-actions{display:flex;gap:.35rem;flex:none}
+.ctx-action{background:none;border:1px solid var(--rule2);border-radius:4px;padding:.25rem .6rem;font:.8rem var(--sans);min-height:32px;cursor:pointer}
+.ctx-action:hover{background:var(--rule);color:var(--iris)}
+.ctx-tabs{display:flex;gap:.35rem;padding:0 1.2rem .75rem}
+.ctx-tab{font:.8rem var(--sans);background:var(--well);border:1px solid var(--rule2);border-radius:99px;padding:.25rem .7rem;min-height:32px;cursor:pointer}
+.ctx-tab:hover,.ctx-tab[aria-selected=true]{border-color:var(--iris);color:var(--iris)}
+#ctxp .ctx-window{border-top:1px solid var(--rule);padding:1rem 1.2rem 1.2rem}
+#ctxp h3{margin:0 0 .7rem}
+.ctx-reading{display:flex;align-items:start;justify-content:space-between;gap:.7rem;margin-bottom:.9rem}
+#ctxp .cbig-n{font-size:.88rem;color:var(--dim)}
+#ctxp .cbig-n b{font:600 2rem var(--serif);color:var(--ink)}
+.ctx-source{display:flex;align-items:end;flex-direction:column;gap:.2rem;flex:none}
+.ctx-percent{font:500 1.35rem var(--serif);font-variant-numeric:tabular-nums}
+.ctx-badge{font-size:.72rem;color:var(--dim);background:var(--well);border:1px solid var(--rule);border-radius:4px;padding:.1rem .4rem}
+.ctx-window .cbar i{border-radius:99px}
+.ctx-scale{display:flex;justify-content:space-between;gap:.7rem;color:var(--dim);font-size:.74rem;margin:.45rem 0 .9rem}
+.ctx-headroom{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:.3rem .7rem;font-size:.84rem;margin:.6rem 0 .4rem}
+#ctxp .ctx-headroom .dim,#ctxp .ctx-window>p.dim{font-size:.74rem}
+.ctx-window.ctx-near{--c0:var(--amber)}.ctx-near .ctx-headroom strong{color:var(--amber)}
+.ctx-grid{display:grid;grid-template-columns:1.3fr 1fr;border-top:1px solid var(--rule)}
+.ctx-grid>section{min-width:0;padding:1rem 1.2rem}
+.ctx-grid>section+section{border-left:1px solid var(--rule)}
+.ctx-lower{grid-template-columns:1fr 1.3fr}
+#ctxp .ctx-grid p.dim{font-size:.74rem;margin:.6rem 0 0}
+.ctx-categories .cbar{height:.5rem}
+.ctx-categories .clegend{display:grid;gap:.25rem;margin-top:.65rem}
+.ctx-categories .clegend li{display:flex;align-items:center;gap:.35rem;padding:.15rem 0}
+.ctx-categories .clegend li::before{flex:none}
+.ctx-categories .clegend .n{margin-left:auto}
+.ctx-category{display:flex;align-items:center;gap:.5rem;flex:1;min-width:0;text-align:left;font:inherit;background:none;border:0;border-radius:4px;padding:.15rem .3rem;cursor:pointer}
+.ctx-category:hover,.ctx-category[aria-pressed=true]{background:var(--rule);color:var(--ink)}
+.ctx-files summary{cursor:pointer;font-size:.84rem;min-height:32px}
+.ctx-file-list{list-style:none;padding:0;margin:.25rem 0}
+.ctx-file-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.1rem .7rem;border-top:1px solid var(--rule);padding:.45rem 0;font-size:.8rem}
+.ctx-file-list li>span:first-child{overflow-wrap:anywhere}
+.ctx-file-list small{grid-column:1/-1;overflow-wrap:anywhere}
+#ctxp .ctx-file-list small.dim{font-size:.72rem}
+.ctx-file-list .n{color:var(--dim);font-variant-numeric:tabular-nums}
+.ctx-kinds{list-style:none;margin:0;padding:0;display:grid;gap:.5rem}
+.ctx-kinds li{display:grid;grid-template-columns:5rem minmax(1rem,1fr) auto;gap:.6rem;align-items:center;font-size:.78rem}
+.ctx-kinds .cbar{height:.35rem}.ctx-kinds .cbar i{border-radius:99px}
+.ctx-kinds .n{color:var(--dim);font-variant-numeric:tabular-nums;text-align:right;min-width:2.5rem}
+#ctxp .cbig button{border-top:1px solid var(--rule);min-height:44px}
+#ctxp #ctx-view-totals>section{padding:1rem 1.2rem;border-top:1px solid var(--rule);min-width:0}
+#ctxp .ctot{grid-template-columns:repeat(auto-fit,minmax(7rem,1fr));gap:1rem;margin-top:1rem}
+#ctxp .ctot dd{font:500 1.35rem var(--serif);margin:.25rem 0 0}
+.ctx-table{max-width:100%;overflow-x:auto;margin-top:.6rem}
+#ctxp p.ctx-foot{margin:0;border-top:1px solid var(--rule);padding:.7rem 1.2rem;font-size:.74rem;color:var(--dim)}
+@media(max-width:700px){
+ #ctxp{padding:1rem .5rem}
+ #ctxp .ctx-head,#ctxp .ctx-window,#ctxp .ctx-grid>section,#ctxp #ctx-view-totals>section{padding:1rem}
+ #ctxp .ctx-head{padding-bottom:.7rem}
+ .ctx-tabs{padding:0 1rem .75rem}
+ .ctx-action{min-width:36px;min-height:36px}.ctx-tab{min-height:36px}
+ #ctxp .cbig-n b{font-size:1.8rem}
+ .ctx-grid,.ctx-lower{grid-template-columns:1fr}
+ .ctx-grid>section+section{border-left:0;border-top:1px solid var(--rule)}
+ #ctxp p.ctx-foot{padding:.7rem 1rem}
+}
+
 @media(max-width:700px){
  :root{--gut:0px}
  .bar{gap:.5rem;padding:.5rem .75rem}
@@ -714,3 +780,6 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
 /* oko's tail on light grounds: a soft shadow under the fox so its pale tip doesn't vanish into paper or snow-light */
 [data-theme=shelf] :is(.wisp,#mark svg){filter:drop-shadow(0 1px 1.2px rgba(60,35,15,.45)) drop-shadow(0 0 .5px rgba(60,35,15,.35))}
 @media(prefers-color-scheme:light){[data-theme=frost] :is(.wisp,#mark svg){filter:drop-shadow(0 1px 1.2px rgba(25,30,45,.4))}}
+
+/* Use frost's existing denser panel surface so small labels stay readable over the modal scrim. */
+[data-theme=frost] #ctxp .card{background:var(--panel)}

@@ -3,6 +3,9 @@
 Run `python -m pytest` for the server/plugin wrapper checks and the README setup checks (requires pytest).
 The setup checks validate guide links and the compose defaults without Docker or a running hermes agent;
 they do not replace a container smoke test. The standalone checks below cover the server and browser.
+The browser suite checks the context panel at phone and desktop widths in every theme, including
+both system color schemes for frost. It also covers loading/unavailable states, refresh response
+ordering, tabs, file details, keyboard navigation and dialog focus.
 
 ```bash
 python3 oko-tail.py --selftest     # server tests against a throwaway database and a stub gateway

@@ -744,7 +744,7 @@ function renderStats(s){
 
 // ---- token panel: where the context goes (the agent's own /context), the biggest rows in it, totals, model switch
 const ctxp=$('ctxp'), num=s=>+String(s).replace(/,/g,'');
-let lastStats=null;
+let lastStats=null, ctxSeq=0, ctxTab='context', ctxReturn=null;
 function parseContext(t){
   t=t.replace(/[*`]/g,'');
   const g=re=>(t.match(re)||[]).slice(1), [mark,used,win]=g(/In use:\s*(~?)\s*([\d,]+)\s*\/\s*([\d,]+)/),
@@ -754,7 +754,8 @@ function parseContext(t){
   return {used:num(used??approx),win:used==null?null:num(win),estimated:!!mark||used==null,
     auto:num(g(/Auto-compresses at:\s*([\d,]+)/)[0]||g(/Over auto-compression threshold \(([\d,]+)/)[0]||0),comp:g(/Compressions this session:\s*(\d+)/)[0],
     cats:[...t.matchAll(/^\S+\s+([A-Z][A-Za-z ]*?)\s*~\s*([\d,]+)\s*tokens\s*~\s*[\d.]+%/gm)].map(m=>({name:m[1],tok:num(m[2])})),
-    files:[...t.matchAll(/^✓\s+(\S+)\s*~\s*([\d,]+)\s*tokens/gm)].map(m=>({name:m[1],tok:num(m[2])}))};
+    files:[...t.matchAll(/^([✓◐○✗⚠])\uFE0F?[ \t]+([^\n]+?)[ \t]+~[ \t]*([\d,]+)[ \t]*tokens(?:[ \t]+\(([^\n]*)\))?[ \t]*$/gm)]
+      .map(m=>({name:m[2].trim(),tok:num(m[3]),status:({'✓':'Loaded','◐':'Shortened','○':'Not loaded','✗':'Unavailable','⚠':'Flagged'})[m[1]],note:m[4]||''}))};
 }
 function parseModels(t){
   const cur=t.match(/Current:\s*`([^`]+)`/), provs=[];let p=null;
@@ -768,91 +769,150 @@ function parseModels(t){
 // one stacked bar: parts [{name,tok}], scaled to `of` tokens; a mark at `at` (the auto-compact line)
 function bar(parts,of,at){
   const b=el('div','cbar');
-  parts.forEach((p,i)=>{const s=el('i');s.style.width=(100*p.tok/of)+'%';s.style.setProperty('--c','var(--c'+i%6+')');s.title=p.name+': ~'+kfmt(p.tok);b.append(s)});
-  if(at){const m=el('b');m.style.left=(100*at/of)+'%';m.title='auto-compacts here';b.append(m)}
+  const scale=Math.max(of,parts.reduce((a,p)=>a+p.tok,0),1);
+  parts.forEach((p,i)=>{const s=el('i');s.style.width=(100*p.tok/scale)+'%';s.style.setProperty('--c','var(--c'+(p.color??i)%6+')');s.title=p.name+': ~'+kfmt(p.tok);b.append(s)});
+  if(at){const m=el('b');m.style.left=Math.min(100,100*at/Math.max(of,1))+'%';m.title='auto-compacts at '+kfmt(at);b.append(m)}
   const lg=el('ul','clegend');
-  parts.forEach((p,i)=>{const li=el('li');li.style.setProperty('--c','var(--c'+i%6+')');li.append(el('span',null,p.name),el('span','n','~'+kfmt(p.tok)));lg.append(li)});
+  parts.forEach((p,i)=>{const li=el('li');li.style.setProperty('--c','var(--c'+(p.color??i)%6+')');li.append(el('span',null,p.name),el('span','n','~'+kfmt(p.tok)));lg.append(li)});
   return [b,lg];
 }
 function ctxSection(card,title){const s=el('section');s.append(el('h3',null,title));card.append(s);return s}
-async function openCtx(){
-  // The server checks the socket on every command. A cached /cmds discovery must not decide whether we ask.
-  const card=ctxp.querySelector('.card'), main=cur===CFG.main;
-  card.replaceChildren(el('h2',null,'Context and usage'));ctxp.hidden=false;
-  const gauge=ctxSection(card,'Context window');gauge.append(el('p','dim',main?'asking '+AG+'…':'The exact breakdown comes from '+AG+'\'s /context, which only the main session can reach.'));
-  const conv=ctxSection(card,'Conversation, by kind'), big=ctxSection(card,'Biggest in context');
-  const notice=(section,message)=>{section.replaceChildren(section.querySelector('h3'),el('p','dim',message))};
-  notice(conv,'Reading active messages…');notice(big,'Reading active messages…');
-  const tot=ctxSection(card,'Totals'), mod=main?ctxSection(card,'Model'):null;
+function closeCtx(){ctxp.hidden=true;ctxSeq++;if(ctxReturn&&ctxReturn.isConnected)ctxReturn.focus()}
+function ctxNotice(section,message){section.replaceChildren(section.querySelector('h3'),el('p','dim',message))}
+function openCtx(refresh=false){
+  const card=ctxp.querySelector('.card'), main=cur===CFG.main, seq=++ctxSeq, current=()=>seq===ctxSeq;
+  if(ctxp.hidden)ctxReturn=document.activeElement;
+  if(!refresh)ctxTab='context';
+  const heading=el('div','ctx-head'), title=el('div'), actions=el('div','ctx-actions'), reload=el('button','ctx-action','↻ Refresh'), close=el('button','ctx-action','×');
+  title.append(el('h2',null,'Context and usage'),el('p','dim',AG+' · '+(main?'Main session':cur==='*'?'All sessions':'Selected session')));
+  reload.type=close.type='button';reload.setAttribute('aria-label','Refresh context');close.setAttribute('aria-label','Close context panel');
+  reload.onclick=()=>openCtx(true);close.onclick=closeCtx;actions.append(reload,close);heading.append(title,actions);
+  const tabs=el('div','ctx-tabs'), view=el('div','ctx-view'), totals=el('div','ctx-view'), foot=el('p','ctx-foot','Reading session details…');
+  tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Usage view');
+  const pages={context:view,totals};
+  const select=name=>{ctxTab=name;for(const [k,p] of Object.entries(pages)){p.hidden=k!==name;const b=tabs.querySelector('[data-tab="'+k+'"]');b.setAttribute('aria-selected',String(k===name));b.tabIndex=k===name?0:-1}};
+  for(const [k,label] of [['context','Context'],['totals','Session totals']]){
+    const b=el('button','ctx-tab',label);b.type='button';b.dataset.tab=k;b.id='ctx-tab-'+k;b.setAttribute('role','tab');b.setAttribute('aria-controls','ctx-view-'+k);
+    pages[k].id='ctx-view-'+k;pages[k].setAttribute('role','tabpanel');pages[k].setAttribute('aria-labelledby',b.id);
+    b.onclick=()=>select(k);b.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'context':e.key==='End'?'totals':k==='context'?'totals':'context';select(next);tabs.querySelector('[data-tab="'+next+'"]').focus()}};
+    tabs.append(b);
+  }
+  card.replaceChildren(heading,tabs,view,totals,foot);select(ctxTab);ctxp.hidden=false;
+  (refresh?reload:close).focus();
+  const gauge=ctxSection(view,'Context window');gauge.className='ctx-window';gauge.setAttribute('aria-live','polite');
+  gauge.append(el('p','dim',main?'Reading context…':'Window details are available in the main session.'));
+  const upper=el('div','ctx-grid'), lower=el('div','ctx-grid ctx-lower');view.append(upper,lower);
+  const cats=ctxSection(upper,'Where the context goes'), files=ctxSection(upper,'Context files'), conv=ctxSection(lower,'Conversation, by kind'), big=ctxSection(lower,'Biggest in context');
+  cats.className='ctx-categories';files.className='ctx-files';
+  for(const section of [cats,files])ctxNotice(section,main?'Reading context…':'Available in the main session.');
+  ctxNotice(conv,'Reading active messages…');ctxNotice(big,'Reading active messages…');
+  const tot=ctxSection(totals,'Across the whole session'), tools=ctxSection(totals,'Tool activity'), mod=main?ctxSection(totals,'Model'):null;
+  tot.append(el('p','dim','Cumulative throughput: each call sends the context again, so these totals can exceed the window size.'));
   const s=lastStats||{}, dl=el('dl','ctot');
   for(const [k,v] of [['input',s.input_tokens],['output',s.output_tokens],['cached',s.cache_read_tokens],['reasoning',s.reasoning_tokens],
-    ['messages',s.message_count],['tool calls',s.tool_call_count],['API calls',s.api_call_count],['cost',s.actual_cost_usd||s.estimated_cost_usd]])
-    if(v!=null)dl.append(el('dt',null,k),el('dd',null,k==='cost'?'$'+v.toFixed(2):kfmt(v)));
-  tot.append(dl,el('p','dim','Lifetime throughput: every call re-sends the window, so these grow much faster than the context.'));
-  const tools=ctxSection(card,'Tools');
-  fetch(qs('tools')).then(r=>r.json()).then(j=>{
-    if(!j||!j.tools.length){tools.remove();return}
+    ['messages',s.message_count],['tool calls',s.tool_call_count],['API calls',s.api_call_count],['cost',s.actual_cost_usd??s.estimated_cost_usd]])
+    if(v!=null){const pair=el('div');pair.append(el('dt',null,k),el('dd',null,k==='cost'?'$'+v.toFixed(2):kfmt(v)));dl.append(pair)}
+  tot.append(dl.children.length?dl:el('p','dim','Session totals are not available yet.'));
+  const get=async path=>{const r=await fetch(qs(path));if(!r.ok)throw Error('unavailable');return r.json()};
+  ctxNotice(tools,'Reading tool activity…');
+  get('tools').then(j=>{
+    if(!current())return;
+    if(!j){ctxNotice(tools,'Tool activity is unavailable.');return}
+    if(!j.tools.length){ctxNotice(tools,'No tool activity recorded.');return}
+    tools.querySelector('p').remove();
     const t=el('table','ttools'), h=el('tr');
     for(const c of ['tool','calls','failed','median','slowest','total'])h.append(el('th',null,c));
     t.append(h);
     for(const x of j.tools){const r=el('tr');
       r.append(el('td',null,x.tool),el('td',null,String(x.n)),el('td',x.failed?'bad':null,x.failed?x.failed+' ('+Math.round(100*x.failed/x.n)+'%)':'0'),
         el('td',null,took(x.median)),el('td',null,took(x.max)),el('td',null,took(x.total)));t.append(r)}
-    tools.append(t,el('p','dim','This session, last '+j.days+' days: time from the call to its result, slowest share of the time first.'));
-  }).catch(()=>tools.remove());
-  fetch(qs('ctx')).then(r=>r.json()).then(j=>{
-    if(!j){notice(conv,'Conversation details are unavailable.');notice(big,'Largest messages are unavailable.');return}
-    if(!j.rows){notice(conv,'No active messages yet.');notice(big,'No active messages yet.');return}
+    const scroll=el('div','ctx-table');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label','Tool activity table');scroll.append(t);
+    tools.append(scroll,el('p','dim','This session, last '+j.days+' days. Time from call to result, slowest total first.'));
+  }).catch(()=>{if(current())ctxNotice(tools,'Tool activity is unavailable.')});
+  get('ctx').then(j=>{
+    if(!current())return;
+    foot.textContent='Message snapshot refreshed at '+new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+'. Sizes are estimates.';
+    if(!j){ctxNotice(conv,'Conversation details are unavailable.');ctxNotice(big,'Largest messages are unavailable.');return}
+    if(!j.rows){ctxNotice(conv,'No active messages yet.');ctxNotice(big,'No active messages yet.');return}
     conv.querySelector('p').remove();big.querySelector('p').remove();
-    const p=j.parts, parts=['summary','you','replies','tool calls','tool output'].map(n=>({name:n,tok:p[n]})).filter(x=>x.tok);
-    const sum=parts.reduce((a,x)=>a+x.tok,0)||1;conv.append(...bar(parts,sum));
-    conv.append(el('p','dim','Rough split of '+j.rows+' messages (characters / 4).'+(p.reasoning?' Reasoning logged on top: ~'+kfmt(p.reasoning)+'.':'')));
+    const p=j.parts, parts=['summary','you','replies','tool calls','tool output'].map((n,i)=>({name:n,tok:p[n],color:i})).filter(x=>x.tok), sum=parts.reduce((a,x)=>a+x.tok,0)||1;
+    const kinds=el('ul','ctx-kinds');
+    for(const part of parts){const li=el('li'), track=bar([part],sum)[0];track.setAttribute('aria-hidden','true');li.append(el('span',null,part.name),track,el('span','n','~'+kfmt(part.tok)));kinds.append(li)}
+    conv.append(kinds,el('p','dim','Estimated from '+j.rows+' active messages (characters / 4).'+(p.reasoning?' Reasoning logged separately: ~'+kfmt(p.reasoning)+'.':'')));
     const ol=el('ol','cbig');
     for(const it of j.items){
       const li=el('li'), b=el('button');b.type='button';
       b.append(el('span','k',it.kind+(it.tool?' · '+it.tool:'')),el('span','n','~'+kfmt(it.tokens)),el('span','pv',it.preview||'(no text)'));
-      b.onclick=()=>{const r=log.querySelector('[data-mid="'+it.id+'"]');if(r){ctxp.hidden=true;goWell(r)}else{b.disabled=true;b.title='not loaded on this page (older than the loaded steps)'}};
+      b.onclick=()=>{const r=log.querySelector('[data-mid="'+it.id+'"]');if(r){closeCtx();goWell(r)}else{b.disabled=true;b.title='Not loaded on this page. Load earlier steps to reach this message.';b.append(el('span','pv','Load earlier steps to reach this message.'))}};
       li.append(b);ol.append(li);
     }
     big.append(ol);
-  }).catch(()=>{notice(conv,'Could not read the active messages.');notice(big,'Largest messages are unavailable.')});
+  }).catch(()=>{if(current()){ctxNotice(conv,'Could not read the active messages.');ctxNotice(big,'Largest messages are unavailable.');foot.textContent='Could not refresh the conversation snapshot.'}});
   if(!main)return;
+  const unavailable=message=>{ctxNotice(gauge,message);ctxNotice(cats,'Category estimates are unavailable.');ctxNotice(files,'Context-file details are unavailable.')};
+  // Ask the server directly; cached socket discovery is not a reliable availability check.
   post('cmd',{session:cur,name:'context'}).then(j=>{
-    if(j.held){notice(gauge,'Context request is waiting for the current turn. Reopen this panel when it finishes.');return}
+    if(!current())return;
+    if(j.held){unavailable('Context request is waiting for the current turn. Refresh when it finishes.');return}
     const c=parseContext((j.messages||[]).join('\n'));
-    if(!c){notice(gauge,j.done==='timeout'?'Context request timed out. Reopen this panel to try again.':'Context details are not available yet. Reopen this panel after the next turn.');return}
+    if(!c){unavailable(j.done==='timeout'?'Context request timed out. Use Refresh to try again.':'Context details are not available yet. Refresh after the next turn.');return}
     gauge.querySelector('p').remove();
-    const head=el('p','cbig-n');head.append(el('b',null,(c.estimated?'~':'')+kfmt(c.used)),c.win?' of '+kfmt(c.win)+' tokens ('+Math.round(100*c.used/c.win)+'%)':' tokens');
-    gauge.append(head);
-    if(c.win)gauge.append(...bar(c.cats.length?c.cats.filter(x=>!/^Free/.test(x.name)):[{name:'In use',tok:c.used}],c.win,c.auto));
+    const mark=c.estimated?'~':'', top=el('div','ctx-reading'), head=el('p','cbig-n'), source=el('div','ctx-source');
+    head.append(el('b',null,mark+kfmt(c.used)),c.win?' of '+kfmt(c.win)+' tokens':' tokens');
+    if(c.win)source.append(el('span','ctx-percent',Math.round(100*c.used/c.win)+'%'));
+    source.append(el('span','ctx-badge',c.estimated?'Estimated':'Reported'));top.append(head,source);gauge.append(top);
+    if(c.win){const meter=bar([{name:'In use',tok:Math.min(c.used,c.win)}],c.win,c.auto)[0];
+      meter.setAttribute('role','meter');meter.setAttribute('aria-label','Context window used');meter.setAttribute('aria-valuemin','0');meter.setAttribute('aria-valuemax',String(c.win));meter.setAttribute('aria-valuenow',String(Math.min(c.used,c.win)));meter.setAttribute('aria-valuetext',mark+kfmt(c.used)+' of '+kfmt(c.win)+' tokens');
+      gauge.append(meter);const labels=el('div','ctx-scale');labels.append(el('span',null,'0'),el('span',null,c.auto?'Auto-compact at '+kfmt(c.auto):'Window limit'),el('span',null,kfmt(c.win)));gauge.append(labels)}
+    const room=el('div','ctx-headroom');
+    if(c.auto){const over=c.used>=c.auto;gauge.classList.toggle('ctx-near',c.used>=c.auto*.9);room.append(el('strong',null,over?'Auto-compact threshold reached':mark+kfmt(c.auto-c.used)+' tokens until auto-compact'))}
+    else if(c.win)room.append(el('strong',null,mark+kfmt(Math.max(0,c.win-c.used))+' tokens to the window limit'));
+    if(c.comp!=null)room.append(el('span','dim',c.comp==='0'?'No compactions this session':'Compacted '+c.comp+'× this session'));
+    gauge.append(room);
     gauge.append(el('p','dim',c.estimated?'Estimated from the available context, not a provider token count.': 'Last reported prompt usage.'));
-    gauge.append(el('p','dim',[c.auto&&'Auto-compacts at '+kfmt(c.auto)+', '+kfmt(Math.max(0,c.auto-c.used))+' to go.',
-      c.comp!=null&&'Compacted '+c.comp+'× this session.',c.files.length&&'Context files: '+c.files.map(f=>f.name+' '+kfmt(f.tok)).join(', ')+'.'].filter(Boolean).join(' ')));
-  }).catch(()=>notice(gauge,'Context details could not be reached. Reopen this panel to try again.'));
+    const parts=c.cats.filter(x=>!/^Free/.test(x.name));
+    if(parts.length){cats.querySelector('p').remove();const [split,legend]=bar(parts,parts.reduce((a,p)=>a+p.tok,0)), note=el('p','dim','Estimated tokens by category. Select one for details.');
+      for(const [i,li] of [...legend.children].entries()){const b=el('button','ctx-category');b.type='button';b.setAttribute('aria-pressed','false');b.append(...li.childNodes);li.append(b);
+        b.onclick=()=>{legend.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));note.textContent=/system/i.test(parts[i].name)?'Instructions, memory and loaded context files. Files below are part of this estimate.':/tool/i.test(parts[i].name)?'Tool descriptions and input schemas available to the model.':/conversation/i.test(parts[i].name)?'Active messages and tool results. Explore the split below.':'Estimated tokens for '+parts[i].name+'. Category estimates may differ from reported usage.'}};
+      cats.append(split,legend,note)}
+    else ctxNotice(cats,'Category estimates are not available for this snapshot.');
+    if(c.files.length){files.querySelector('p').remove();const details=el('details'), list=el('ul','ctx-file-list');
+      details.append(el('summary',null,c.files.length+' context '+(c.files.length===1?'file':'files')));
+      for(const f of c.files){const li=el('li');li.append(el('span',null,f.name),el('span','n','~'+kfmt(f.tok)),el('small','dim',f.status+(f.note?' · '+f.note:'')));list.append(li)}
+      details.append(list);files.append(details,el('p','dim','Loaded files are included in the system prompt above.'))}
+    else ctxNotice(files,'No context-file details in this snapshot.');
+  }).catch(()=>{if(current())unavailable('Context details could not be reached. Use Refresh to try again.')});
   loadModels(mod);
 }
 function loadModels(mod){
   mod.replaceChildren(el('h3',null,'Model'),el('p','dim','loading…'));
   post('cmd',{session:cur,name:'model'}).then(j=>{
     const t=(j.messages||[]).join('\n'), m=parseModels(t);mod.querySelector('p').remove();
-    if(!m.provs.length){mod.append(el('p','dim',t||'No answer from /model.'));return}
+    if(!m.provs.length){mod.append(el('p','dim',m.current?'Current model: '+m.current:'Model choices are unavailable.'));return}
     for(const p of m.provs){
       const row=el('div','cmods');row.append(el('span','k',p.label));
       for(const name of p.models){
         const b=el('button','chip'+(p.current&&name===m.current?' on':''),name);b.type='button';
-        b.onclick=()=>{mod.querySelectorAll('.chip').forEach(c=>c.disabled=true);
-          post('cmd',{session:cur,name:'model',args:name+' --provider '+p.slug}).then(r=>{loadModels(mod);mod.append(el('p','dim',(r.messages||[]).join('\n')))})
-            .catch(e=>{loadModels(mod);mod.append(el('p','bad',e.message))})};
+        b.onclick=()=>{mod.querySelectorAll('.chip').forEach(c=>c.disabled=true);$('ctx-tab-totals').focus();
+          post('cmd',{session:cur,name:'model',args:name+' --provider '+p.slug}).then(r=>{loadModels(mod);mod.append(el('p','dim',r.held?'Model change is waiting for the current turn.':'Model change requested.'))})
+            .catch(()=>{loadModels(mod);mod.append(el('p','bad','Could not switch model. Try again.'))})};
         row.append(b);
       }
       if(p.more)row.append(el('span','dim','+'+p.more+' more'));
       mod.append(row);
     }
     mod.append(el('p','dim','Switches this session only.'));
-  }).catch(e=>{mod.querySelector('p').textContent='/model failed: '+e.message});
+  }).catch(()=>ctxNotice(mod,'Model choices could not be reached.'));
 }
-$('stats').onclick=openCtx;
-ctxp.onclick=e=>{if(e.target===ctxp)ctxp.hidden=true};
+$('stats').onclick=()=>openCtx();
+ctxp.onclick=e=>{if(e.target===ctxp)closeCtx()};
+ctxp.onkeydown=e=>{
+  if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeCtx();return}
+  if(e.key!=='Tab')return;
+  const items=[...ctxp.querySelectorAll('button:not(:disabled),summary,[tabindex="0"]')].filter(n=>n.tabIndex!==-1&&n.offsetParent), first=items[0], last=items[items.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+};
 // What the agent keeps between turns (its own files, read-only) + the writes it staged for your approval
 const brw=$('brw');
 let brwTab=store.get('brw','memory');
@@ -1507,9 +1567,9 @@ addEventListener('keydown',e=>{
     case 'g':scrollTo({top:0,behavior:smooth});break;
     case 'G':jump.onclick();break;
     case '?':keys.hidden=!keys.hidden;break;
-    case 't':if(ctxp.hidden)openCtx();else ctxp.hidden=true;break;
+    case 't':if(ctxp.hidden)openCtx();else closeCtx();break;
     case 'b':if(brw.hidden)openBrowse();else brw.hidden=true;break;
-    case 'Escape':keys.hidden=true;ctxp.hidden=true;brw.hidden=true;if(!search.hidden)closeSearch();break;
+    case 'Escape':keys.hidden=true;if(!ctxp.hidden)closeCtx();brw.hidden=true;if(!search.hidden)closeSearch();break;
     default:return;
   }
   e.preventDefault();
