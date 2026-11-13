@@ -747,9 +747,12 @@ const ctxp=$('ctxp'), num=s=>+String(s).replace(/,/g,'');
 let lastStats=null;
 function parseContext(t){
   t=t.replace(/[*`]/g,'');
-  const g=re=>(t.match(re)||[]).slice(1), [used,win]=g(/In use:\s*([\d,]+)\s*\/\s*([\d,]+)/);
-  if(!used)return null;
-  return {used:num(used),win:num(win),auto:num(g(/Auto-compresses at:\s*([\d,]+)/)[0]||0),comp:g(/Compressions this session:\s*(\d+)/)[0],
+  const g=re=>(t.match(re)||[]).slice(1), [mark,used,win]=g(/In use:\s*(~?)\s*([\d,]+)\s*\/\s*([\d,]+)/),
+    [approx]=g(/Estimated context:\s*~\s*([\d,]+)\s*tokens/);
+  if(used==null&&approx==null)return null;
+  if(used!=null&&!(num(win)>0))return null;
+  return {used:num(used??approx),win:used==null?null:num(win),estimated:!!mark||used==null,
+    auto:num(g(/Auto-compresses at:\s*([\d,]+)/)[0]||g(/Over auto-compression threshold \(([\d,]+)/)[0]||0),comp:g(/Compressions this session:\s*(\d+)/)[0],
     cats:[...t.matchAll(/^\S+\s+([A-Z][A-Za-z ]*?)\s*~\s*([\d,]+)\s*tokens\s*~\s*[\d.]+%/gm)].map(m=>({name:m[1],tok:num(m[2])})),
     files:[...t.matchAll(/^✓\s+(\S+)\s*~\s*([\d,]+)\s*tokens/gm)].map(m=>({name:m[1],tok:num(m[2])}))};
 }
@@ -773,10 +776,13 @@ function bar(parts,of,at){
 }
 function ctxSection(card,title){const s=el('section');s.append(el('h3',null,title));card.append(s);return s}
 async function openCtx(){
-  const card=ctxp.querySelector('.card'), main=cur===CFG.main&&SOCK;
+  // The server checks the socket on every command. A cached /cmds discovery must not decide whether we ask.
+  const card=ctxp.querySelector('.card'), main=cur===CFG.main;
   card.replaceChildren(el('h2',null,'Context and usage'));ctxp.hidden=false;
   const gauge=ctxSection(card,'Context window');gauge.append(el('p','dim',main?'asking '+AG+'…':'The exact breakdown comes from '+AG+'\'s /context, which only the main session can reach.'));
   const conv=ctxSection(card,'Conversation, by kind'), big=ctxSection(card,'Biggest in context');
+  const notice=(section,message)=>{section.replaceChildren(section.querySelector('h3'),el('p','dim',message))};
+  notice(conv,'Reading active messages…');notice(big,'Reading active messages…');
   const tot=ctxSection(card,'Totals'), mod=main?ctxSection(card,'Model'):null;
   const s=lastStats||{}, dl=el('dl','ctot');
   for(const [k,v] of [['input',s.input_tokens],['output',s.output_tokens],['cached',s.cache_read_tokens],['reasoning',s.reasoning_tokens],
@@ -795,7 +801,9 @@ async function openCtx(){
     tools.append(t,el('p','dim','This session, last '+j.days+' days: time from the call to its result, slowest share of the time first.'));
   }).catch(()=>tools.remove());
   fetch(qs('ctx')).then(r=>r.json()).then(j=>{
-    if(!j){conv.remove();big.remove();return}
+    if(!j){notice(conv,'Conversation details are unavailable.');notice(big,'Largest messages are unavailable.');return}
+    if(!j.rows){notice(conv,'No active messages yet.');notice(big,'No active messages yet.');return}
+    conv.querySelector('p').remove();big.querySelector('p').remove();
     const p=j.parts, parts=['summary','you','replies','tool calls','tool output'].map(n=>({name:n,tok:p[n]})).filter(x=>x.tok);
     const sum=parts.reduce((a,x)=>a+x.tok,0)||1;conv.append(...bar(parts,sum));
     conv.append(el('p','dim','Rough split of '+j.rows+' messages (characters / 4).'+(p.reasoning?' Reasoning logged on top: ~'+kfmt(p.reasoning)+'.':'')));
@@ -807,16 +815,20 @@ async function openCtx(){
       li.append(b);ol.append(li);
     }
     big.append(ol);
-  }).catch(()=>conv.append(el('p','dim','Couldn\'t read the context rows.')));
+  }).catch(()=>{notice(conv,'Could not read the active messages.');notice(big,'Largest messages are unavailable.')});
   if(!main)return;
   post('cmd',{session:cur,name:'context'}).then(j=>{
-    const c=parseContext((j.messages||[]).join('\n'));gauge.querySelector('p').remove();
-    if(!c){gauge.append(el('p','dim',(j.messages||[]).join('\n')||'No answer from /context.'));return}
-    const head=el('p','cbig-n');head.append(el('b',null,kfmt(c.used)),' of '+kfmt(c.win)+' tokens ('+Math.round(100*c.used/c.win)+'%)');
-    gauge.append(head,...bar(c.cats.filter(x=>!/^Free/.test(x.name)),c.win,c.auto));
+    if(j.held){notice(gauge,'Context request is waiting for the current turn. Reopen this panel when it finishes.');return}
+    const c=parseContext((j.messages||[]).join('\n'));
+    if(!c){notice(gauge,j.done==='timeout'?'Context request timed out. Reopen this panel to try again.':'Context details are not available yet. Reopen this panel after the next turn.');return}
+    gauge.querySelector('p').remove();
+    const head=el('p','cbig-n');head.append(el('b',null,(c.estimated?'~':'')+kfmt(c.used)),c.win?' of '+kfmt(c.win)+' tokens ('+Math.round(100*c.used/c.win)+'%)':' tokens');
+    gauge.append(head);
+    if(c.win)gauge.append(...bar(c.cats.length?c.cats.filter(x=>!/^Free/.test(x.name)):[{name:'In use',tok:c.used}],c.win,c.auto));
+    gauge.append(el('p','dim',c.estimated?'Estimated from the available context, not a provider token count.': 'Last reported prompt usage.'));
     gauge.append(el('p','dim',[c.auto&&'Auto-compacts at '+kfmt(c.auto)+', '+kfmt(Math.max(0,c.auto-c.used))+' to go.',
       c.comp!=null&&'Compacted '+c.comp+'× this session.',c.files.length&&'Context files: '+c.files.map(f=>f.name+' '+kfmt(f.tok)).join(', ')+'.'].filter(Boolean).join(' ')));
-  }).catch(e=>{gauge.querySelector('p').textContent='/context failed: '+e.message});
+  }).catch(()=>notice(gauge,'Context details could not be reached. Reopen this panel to try again.'));
   loadModels(mod);
 }
 function loadModels(mod){

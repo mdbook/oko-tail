@@ -626,6 +626,38 @@ try:
         e2("document.getElementById('ctxp').hidden=true"); pg2.keyboard.press("t")
         assert not e2("document.getElementById('ctxp').hidden"); pg2.keyboard.press("Escape")
         assert e2("document.getElementById('ctxp').hidden")
+        # Opening before /cmds has discovered the socket must still request live context.
+        e2("SOCK=false; openCtx()")
+        pg2.wait_for_function("document.querySelector('#ctxp .cbig-n')", timeout=4000)
+        assert e2("document.querySelector('#ctxp .cbig-n').textContent").startswith("56k of 200k")
+        e2("SOCK=true")
+        ctx_reply = {}
+        def context_reply(route):
+            if route.request.post_data_json.get("name") == "context":
+                route.fulfill(json=ctx_reply)
+            else:
+                route.continue_()
+        pg2.route("**/cmd", context_reply)
+        for response, expected in [
+            ({"messages": ["**Context Window**\nIn use: ~56,026 / 200,000 (~28%)"], "done": "finished"}, "~56k of 200k"),
+            ({"messages": ["Estimated context: ~1,234 tokens across 5 messages"]}, "~1.2k tokens"),
+            ({"messages": ["**A changed upstream format**"]}, "not available yet"),
+            ({"messages": [], "done": "finished"}, "not available yet"),
+            ({"messages": [], "done": "timeout"}, "timed out"),
+            ({"messages": [], "held": True}, "waiting for the current turn"),
+        ]:
+            ctx_reply = response
+            e2("openCtx()")
+            pg2.wait_for_function("text=>document.querySelector('#ctxp section').textContent.includes(text)", arg=expected)
+            assert "**" not in e2("document.querySelector('#ctxp section').textContent")
+        pg2.unroute("**/cmd", context_reply)
+        # A database read failure retains a useful status instead of silently dropping both sections.
+        pg2.route("**/ctx?*", lambda route: route.fulfill(json=None, body="null", content_type="application/json"))
+        e2("openCtx()")
+        pg2.wait_for_function("document.getElementById('ctxp').textContent.includes('Conversation details are unavailable.')")
+        assert "Largest messages are unavailable." in e2("document.getElementById('ctxp').textContent")
+        pg2.unroute("**/ctx?*")
+        pg2.keyboard.press("Escape")
         # browse (b): memory split on §, skills open to their SKILL.md, a staged write approves through the socket
         for p, body in (("memories/MEMORY.md", "first **note**\n§\nsecond"), ("skills/ops/ship/SKILL.md", "---\nname: ship\ndescription: d\n---\n# Ship it"),
                         ("pending/memory/ab12cd34.json", json.dumps({"id": "ab12cd34", "action": "add", "summary": "remember <b>x</b>",

@@ -25,3 +25,31 @@ hl, plain = out[9], out[10]
 assert '<span .hk>"if"' in hl and '<span .hs>"\\"a#b\\""' in hl and '<span .hn>"42"' in hl, hl  # kw, string (# inside kept), number
 assert '<span .hc>"# see https://e.com"' in hl and "<span" not in plain, plain  # comment; an unlabelled fence stays plain
 print("md selftest ok")
+
+# /context varies with the source: provider usage, a local estimate, or transcript-only after eviction.
+a = js.index("function parseContext("); b = js.index("function parseModels(", a)
+context_test = r"""
+const assert=require('node:assert/strict'), num=s=>+String(s).replace(/,/g,'');
+""" + js[a:b] + r"""
+const exact='🧠 **Context Window**\nWindow: 200,000 tokens\nIn use: 56,026 / 200,000 (28%)\n'+
+  'Auto-compresses at: 150,000 (75%)\nCompressions this session: 2\n'+
+  '■ System prompt ~ 4,469 tokens ~ 2.2%\n▨ Conversation ~ 45,141 tokens ~ 22.6%\n'+
+  '✓ AGENTS.md ~ 1,770 tokens';
+assert.equal(parseContext(exact).used,56026);
+const estimated=parseContext(exact.replace('In use: 56,026','In use: ~56,026'));
+assert.ok(estimated,'the estimate marker must not discard the entire reply');
+assert.equal(estimated.used,56026);assert.equal(estimated.estimated,true);
+assert.equal(estimated.cats.length,2);assert.equal(estimated.files.length,1);
+assert.equal(parseContext(exact).estimated,false);
+assert.equal(parseContext(exact.replace('56,026 /','0 /')).used,0);
+assert.equal(parseContext(exact.replace('200,000 (28%)','0 (28%)')),null);
+const transcript=parseContext('🧠 **Context Window**\nEstimated context: ~1,234 tokens across 5 messages');
+assert.equal(transcript.used,1234);assert.equal(transcript.win,null);assert.equal(transcript.estimated,true);
+const over=parseContext(exact.replace('Auto-compresses at: 150,000 (75%)','⚠️ **Over auto-compression threshold (150,000, 75%)**'));
+assert.equal(over.auto,150000);
+for(const t of ['', 'No context data available yet.', '**Unknown format**', 'In use: NaN / 200,000'])assert.equal(parseContext(t),null);
+console.log('context parser selftest ok');
+"""
+r = subprocess.run(["node", "-e", context_test], capture_output=True, text=True, timeout=10)
+assert r.returncode == 0, r.stderr
+print(r.stdout.strip())

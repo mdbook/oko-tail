@@ -118,7 +118,8 @@ both commands. Run `python3 oko-tail.py` without `--serve` for a terminal view.
 - **Talk from the page:** send text and images, queue follow-ups, and stop or steer page-sent turns.
 - **Live progress:** page-sent turns stream tokens; other turns show database steps. Live thinking
   and writing for those other turns needs the [bundled progress plugin](docs/plugins.md#live-progress-for-turns-you-didnt-send).
-- **Agent controls:** sessions, search, token usage, memory and skills. Full slash commands,
+- **Agent controls:** sessions, search, token usage, memory and skills. The context panel labels
+  estimated counts and shows a clear status when details are unavailable. Full slash commands,
   approval actions and Stop for turns started elsewhere need a compatible command-socket plugin.
   **That command plugin is unpublished and is not included here.** The
   [plugin guide](docs/plugins.md#the-command-socket) lists what works without it.

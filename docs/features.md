@@ -45,6 +45,9 @@
   using it (from the agent's own `/context`), the largest messages in context (click one to jump to
   it), lifetime totals and cost, one-click model switching for the session, and tool health: calls,
   failures, median and slowest time per tool over the last week.
+  A `~` marks an estimated context count; an unmarked count is the last reported prompt usage.
+  Hermes can return a transcript estimate without a window limit, in which case no percentage is
+  shown. Missing or delayed context details show a status message; reopen the panel to try again.
 - **What the agent keeps** (the folder button, or press `b`): its memory notes, what it knows about
   you, its skills (open one to read it), cron jobs, and memory or skill writes staged for your
   approval, read straight from `$HERMES_HOME`. With the [command socket](plugins.md#the-command-socket),

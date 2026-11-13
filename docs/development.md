@@ -6,7 +6,7 @@ they do not replace a container smoke test. The standalone checks below cover th
 
 ```bash
 python3 oko-tail.py --selftest     # server tests against a throwaway database and a stub gateway
-python3 test-oko-tail-md.py        # the page's markdown renderer (needs node)
+python3 test-oko-tail-md.py        # markdown and context-response parsing (needs node)
 python3 test-oko-tail-ui.py        # drives the real page in headless Chromium (skipped without playwright)
 python3 contrib/hermes-plugin/test-plugin.py   # the progress plugin, against a real unix socket (no hermes needed)
 python3 contrib/hermes-plugin/test-context-steward.py   # the context plugin (no hermes needed)
