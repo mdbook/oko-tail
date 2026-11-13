@@ -59,6 +59,8 @@ body.compacting #mark svg{opacity:1;filter:none}
 body.busy #state,body.compacting #state{color:var(--amber)}
 body.offline #state{color:var(--bad)}
 .grow{flex:1 1 0}
+#actions{display:contents}
+#overflow{display:none}
 #stats{color:var(--faint);font-size:.78rem;font-variant-numeric:tabular-nums;white-space:nowrap}
 #stats b{font-weight:500;color:var(--dim)}
 #find,#browse,#steps{flex:0 0 auto;background:none;border:1px solid transparent;border-radius:4px;color:var(--dim);cursor:pointer;
@@ -783,3 +785,58 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
 
 /* Use frost's existing denser panel surface so small labels stay readable over the modal scrim. */
 [data-theme=frost] #ctxp .card{background:var(--panel)}
+
+/* Phone chrome: keep the transcript wide and secondary controls out of its way. */
+@media(max-width:700px){
+ .bar{position:relative;gap:.35rem;padding:.25rem .5rem}
+ #mark{min-width:44px;max-width:30%;min-height:44px;overflow:hidden;white-space:nowrap;justify-content:flex-start}
+ .bar>.grow{display:none}
+ .sesswrap{flex:1 1 0;min-width:0}
+ #sess{max-width:none;min-height:44px}
+ #state{flex:0 1 auto;min-width:2.5rem;max-width:22%}
+ #overflow{display:block;flex:none;width:44px;min-height:44px;background:none;border:1px solid var(--rule2);border-radius:6px;cursor:pointer}
+ #actions{display:none;position:absolute;top:100%;right:.5rem;width:min(18rem,calc(100vw - 1rem));
+  padding:.5rem;background:var(--panel);border:1px solid var(--rule2);border-radius:8px;box-shadow:0 14px 34px #0009;z-index:8;
+  grid-template-columns:repeat(3,minmax(0,1fr));gap:.35rem;align-items:center}
+ #overflow[aria-expanded=true]+#actions{display:grid}
+ #actions :is(#find,#browse,#theme){width:100%;height:44px}
+ #actions #steps,#actions #stats{display:block;grid-column:1/-1;white-space:normal}
+ #actions #brand{grid-column:1/-1;max-width:100%;justify-self:center}
+ #sesslist{top:3.5rem;max-height:60dvh}
+ main{padding-bottom:1rem}
+ body.composing main{padding-bottom:calc(var(--compose-h,8rem) + .5rem)}
+ body.composing #jump{bottom:calc(var(--compose-h,8rem) + .5rem)}
+ #compose{padding-bottom:calc(.25rem + env(safe-area-inset-bottom))}
+ #compose .box{display:grid;grid-template-columns:44px minmax(0,1fr);gap:.25rem;padding:.35rem}
+ #msg{grid-row:1;grid-column:1/-1;width:100%;min-height:44px;padding:.4rem;font-size:16px}
+ #attach{grid-row:2;grid-column:1;width:44px;height:44px}
+ .acts{grid-row:2;grid-column:2;justify-content:flex-end;flex-wrap:nowrap;min-width:0}
+ #cnotes:empty{display:none}
+ #search{flex-wrap:wrap;gap:.35rem}
+ #q{flex-basis:calc(100% - 4rem);font-size:16px}
+ #qn{white-space:normal}
+ #hits{padding-left:.5rem;padding-right:.5rem}
+ :is(.bd,.gut,.card,.via,.qi,#cnotes,#appr){overflow-wrap:anywhere}
+ .gut{flex-wrap:wrap;gap:.2rem .6rem}
+ .via{width:auto;flex-wrap:wrap}
+ .qi{flex-wrap:wrap}
+ .qi .qk{max-width:100%}
+ .qi .qt{flex-basis:45%}
+ .md pre.mdpre,.term pre,.bpre{white-space:pre-wrap;overflow-wrap:anywhere}
+ :is(#keys,#ctxp,#brw) .card{min-width:0;max-width:100%;overflow-wrap:anywhere}
+ #keys{padding:.5rem;overflow:auto}
+ #keys dl{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:.5rem}
+ #keys dt{flex-wrap:wrap}
+ .ctx-head{flex-wrap:wrap}
+ body :is(button,.so,.opt,.bent summary,.ctx-files summary,.imgs a){min-width:44px;min-height:44px}
+ .tape,.tape.dense{height:auto;gap:2px}
+ /* Keep the duration bars small inside full-size tap targets. */
+ .tick,.tape.dense .tick{width:44px;height:44px;border:solid var(--ground);
+  border-width:calc(22px - var(--d,.3) * .75rem) 19.5px 18px;border-radius:0}
+ .thumb button{width:44px;height:44px;top:0;right:0}
+ .tgl,.more,.qb{padding:.5rem}
+ .tacts{flex-wrap:wrap;gap:.25rem}
+ .tally .bd{gap:.35rem}
+ .cp{position:static;float:right;opacity:.6;margin:0 0 .25rem .25rem}
+ .term:has(>.cp),.cpw:has(>.cp),.bd:has(>.cp),.mdpre:has(>.cp){display:flow-root}
+}

@@ -336,14 +336,14 @@ try:
         ev(f"{tw2}.querySelector('.out .xfull .more').click()"); pg.wait_for_timeout(150)
         assert ev(f"{tw2}.querySelector('.out pre').textContent") == "cut out"
         # a clipped user message: the full text expands in the message's own block, with the peer prefix still stripped
-        pref, tail = "[DM from infra-bot@x (infra)]\n", "all of it, much longer"
+        pref, tail = "[DM from infra-bot@chat.example (infra), sent 2026-11-13 00:51:58 EST]\n", "all of it, much longer"
         ev("handle({rows:[{id:923,session:'s',role:'user',ts:Date.now()/1000-10,"
            f"content:{json.dumps(pref + 'part of it')},content_full:{json.dumps(pref + tail)},tool_calls:[]}}],gateway:true}})")
         pg.wait_for_timeout(200)
         ur = "document.querySelector('#log .row.in[data-mid=\"923\"]')"
         assert ev(f"{ur}.querySelector('.xfull .more').textContent") == f"show full ({len(tail)} chars)", ev(f"{ur}.querySelector('.xfull .more').textContent")
         ev(f"{ur}.querySelector('.bd>.cp').click()"); pg.wait_for_timeout(150)
-        assert ev("navigator.clipboard.readText()") == tail, "the prefix stays stripped from the copy too"
+        assert ev("navigator.clipboard.readText()") == pref + tail, "copy retains the raw envelope and full body"
         ev(f"{ur}.querySelector('.xfull .more').click()"); pg.wait_for_timeout(150)
         assert ev(f"{ur}.querySelector('.bd .md').textContent") == tail, "the peer prefix stays stripped when expanded"
         # per-tool result renderers (keyed by tool name): web_search reads as a hit list (linked title, domain, snippet),
@@ -701,7 +701,7 @@ try:
         for theme, scheme in [("", "dark"), ("", "light"), ("frost", "dark"), ("frost", "light"), ("shelf", "light"), ("shelf-dark", "dark")]:
             pg2.emulate_media(color_scheme=scheme)
             e2("t=>document.documentElement.dataset.theme=t", theme)
-            for width in (390, 1440):
+            for width in (360, 390, 430, 1440):
                 pg2.set_viewport_size({"width": width, "height": 1000})
                 e2("openCtx()")
                 pg2.wait_for_function("document.querySelector('#ctxp .cbig-n')")
@@ -768,6 +768,69 @@ try:
         assert "not delivered" in e2("document.getElementById('cnotes').textContent"), e2("document.getElementById('cnotes').textContent")
         con.execute("delete from messages where id in (?,?)", (approval_user, approval_tool)); con.commit()
         e2("handle({rows:[],gateway:true})"); pg2.wait_for_function("document.getElementById('appr').hidden", timeout=3000)
+        # Phone sweep: the same controls remain usable without consuming the input row.
+        def phone_fits():
+            assert e2("document.documentElement.scrollWidth<=innerWidth"), (width, "page overflow")
+            assert e2("compose.scrollWidth<=compose.clientWidth"), (width, "composer overflow")
+            small = e2("[...document.querySelectorAll('button,.so,.opt')].filter(b=>b.getClientRects().length && getComputedStyle(b).visibility!=='hidden').filter(b=>{const r=b.getBoundingClientRect();return r.width<44 || r.height<44}).map(b=>[b.id,b.className,b.getBoundingClientRect().width,b.getBoundingClientRect().height])")
+            assert not small, (width, "tap target", small)
+
+        pg2.emulate_media(reduced_motion="reduce")  # measure settled targets, not the dialog's pop-in transform
+        e2("handle({rows:[{id:2000,session:'s',role:'user',ts:Date.now()/1000,content:'A long path: /'+ 'segment'.repeat(100)+'\\n\\n```\\n'+'code'.repeat(100)+'\\n```',tool_calls:[]}],gateway:true})")
+        for width in (360, 390, 430):
+            pg2.set_viewport_size({"width": width, "height": 800})
+            pg2.wait_for_timeout(100)
+            # Busy and idle controls; inspect synchronously so heartbeat updates cannot race the fixture.
+            for busy in (False, True):
+                layout = e2("""busy=>{
+                    $('stop').hidden=!busy;$('force').hidden=!busy;sendBtn.textContent=busy?'Queue':'Send';
+                    const box=document.querySelector('#compose .box'), style=getComputedStyle(box),
+                        b=box.getBoundingClientRect(), m=msgBox.getBoundingClientRect(),
+                        t=$('attach').getBoundingClientRect(), acts=document.querySelector('.acts'),
+                        a=acts.getBoundingClientRect(), buttons=[...acts.children].filter(x=>!x.hidden).map(x=>x.getBoundingClientRect());
+                    return {
+                        input_full_width:m.width>b.width-24,
+                        input_first_row:Math.abs(m.top-b.top-parseFloat(style.borderTopWidth)-parseFloat(style.paddingTop))<1,
+                        controls_below_input:m.bottom<=Math.min(t.top,a.top),
+                        controls_share_row:Math.abs(t.top-a.top)<1,
+                        actions_flexible_column:Math.abs(a.left-t.right-parseFloat(style.columnGap))<1 && Math.abs(a.right-m.right)<1,
+                        buttons_one_row:buttons.every(r=>Math.abs(r.top-buttons[0].top)<1 && r.left>=a.left && r.right<=a.right && r.bottom<=a.bottom),
+                        actions_right_aligned:Math.abs(buttons[buttons.length-1].right-a.right)<1
+                    };
+                }""", busy)
+                assert all(layout.values()), (width, busy, layout)
+                phone_fits()
+            e2("cnote('');renderQ()")
+            pg2.wait_for_timeout(100)
+            assert e2("Math.abs(parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom)-compose.getBoundingClientRect().height-8)<2"), "no fixed 11rem gap"
+            assert e2("getComputedStyle(cnotes).display==='none'")
+            pg2.click("#overflow"); phone_fits()
+            pg2.keyboard.press("Escape")
+            assert e2("document.activeElement.id==='overflow' && overflow.getAttribute('aria-expanded')==='false'")
+            pg2.click("#overflow"); pg2.click("#stats")
+            pg2.wait_for_function("document.querySelector('#ctxp .cbig-n')")
+            phone_fits(); pg2.keyboard.press("Escape")
+            assert e2("document.activeElement.id==='overflow'")
+            pg2.click("#overflow"); pg2.click("#find")
+            pg2.fill("#q", "a long search query")
+            phone_fits(); pg2.keyboard.press("Escape")
+            pg2.click("#sess"); phone_fits(); pg2.keyboard.press("Escape")
+            pg2.fill("#msg", "/")
+            pg2.wait_for_function("!document.getElementById('slash').hidden")
+            phone_fits(); pg2.keyboard.press("Escape"); pg2.fill("#msg", "")
+            pg2.click("#overflow"); pg2.click("#browse")
+            pg2.wait_for_function("document.querySelector('#brw .btabs .chip')")
+            phone_fits(); pg2.keyboard.press("Escape")
+            pg2.keyboard.press("?"); phone_fits(); pg2.keyboard.press("Escape")
+            e2("queue=[{text:'queued '+ 'path'.repeat(100),images:[]}]; qFail='retry later';renderQ();document.getElementById('appr').hidden=false;cnote('A long status '+ 'word'.repeat(100))")
+            pg2.wait_for_timeout(100); phone_fits()
+            assert e2("parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom)>=compose.getBoundingClientRect().height"), "queue/approval growth is reserved"
+            e2("queue=[];qFail=null;renderQ();document.getElementById('appr').hidden=true;cnote('')")
+            if os.environ.get("UI_SHOT"):
+                pg2.screenshot(path=os.environ["UI_SHOT"].replace(".png", f"-mobile-{width}.png"), animations="disabled")
+        pg2.set_viewport_size({"width": 1200, "height": 800})
+        assert e2("getComputedStyle(actions).display==='contents' && getComputedStyle(overflow).display==='none'")
+        assert e2("getComputedStyle(document.querySelector('#compose .box')).display==='flex'"), "desktop composer unchanged"
         # socket gone -> the menu falls back and commands say why instead of "invalid"
         os.unlink(os.path.join(home, "oko-tail.sock"))
         pg2.reload(); pg2.wait_for_timeout(1500)

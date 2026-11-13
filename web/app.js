@@ -472,6 +472,20 @@ function syncSteps(){stepsBtn.textContent=hideSteps?'Show steps':'Hide steps';st
 stepsBtn.onclick=()=>{hideSteps=!hideSteps;store.set('steps',hideSteps?'hide':'show');syncSteps();keepView(()=>turns.forEach(t=>setFold(t,hideSteps,false)))};
 syncSteps();
 
+// One set of actions: inline on desktop, a disclosure on phones (keyboard shortcuts still work).
+const overflow=$('overflow'), actions=$('actions');
+function closeActions(){overflow.setAttribute('aria-expanded','false')}
+overflow.onclick=()=>overflow.setAttribute('aria-expanded',String(overflow.getAttribute('aria-expanded')!=='true'));
+actions.addEventListener('click',e=>{
+  if(e.target.closest('button')){closeActions();if(overflow.getClientRects().length)overflow.focus()}
+},true); // close before the action opens a dialog, so its return-focus target stays visible
+document.addEventListener('pointerdown',e=>{if(!actions.contains(e.target)&&!overflow.contains(e.target))closeActions()});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&overflow.getAttribute('aria-expanded')==='true'){
+    closeActions();overflow.focus();e.preventDefault();e.stopImmediatePropagation();
+  }
+},true);
+
 // ---- rows
 let after=-1, before=null, lastSess=null, lastWho=null, lastTs=null, lastDay=null, lastMsg=null, unseen=0, turn=null, compacting=false, ok=false;
 const pending=new Map(); // session -> tool-call wells still waiting for their result, in call order
@@ -491,8 +505,9 @@ const INBOUND=[[/^\[IMPORTANT: Background process /,'background job',true],[/^\[
   [strip(/^\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*/),'you, mid-turn',false],
   [/^\[Zulip DM · from ([\w-]+)/,'zulip DM',false]];
 // A fleet peer's DM folded into the main session: "[DM from <email> (<name>)]" or
-// "[group DM from <email> (<name>), with a, b]" on its own line. Shown as that peer, with a source chip.
-const PEER=/^\[(group )?DM from (\S+) \(([^)\n]*)\)(?:, with ([^\]\n]*))?\]\n?/;
+// "[group DM from <email> (<name>), with a, b]", optionally timestamped, on its own line.
+// Only the presentation loses the envelope; the copy button keeps the original message.
+const PEER=/^\[(group )?DM from (\S+) \(([^)\r\n]*)\)(?:, with ((?:(?!, sent )[^\]\r\n])*))?(?:, sent [^\]\r\n]+)?\](?:\r?\n|$)/;
 const peerName=(name,email)=>(name||email.split('@')[0]).replace(/-bot$/,'');
 function build(m,frag){
   const day=dayKey(m.ts);
@@ -536,7 +551,7 @@ function build(m,frag){
     // the full text carries the same prefix (the server clips at the tail), so drop it there too
     const full=m.content_full?m.content_full.slice(cut):null;
     const msg=fold(md(body),body,12), xw=full?expand(msg,full,f=>cpPres(md(f))):msg;
-    bd.append(cpPres(xw),cpBtn(()=>full||body,'Copy message'));
+    bd.append(cpPres(xw),cpBtn(()=>px?(m.content_full||m.content):(full||body),'Copy message'));
     const iw=imgs(m.images);if(iw)bd.append(iw);            // images sent in (the page, Zulip, any platform)
     if(cls==='in'&&SINGLE){const e=el('button','tgl edit','edit');e.type='button';e.title='Put this message back in the box to change and send again';
       e.onclick=()=>editInto(body);bd.append(e)}
@@ -1065,6 +1080,11 @@ const compose=$('compose'), msgBox=$('msg'), sendBtn=$('send'), cnotes=$('cnotes
 function cnote(t,err){cnotes.textContent=t;cnotes.className=err?'err':''}
 function syncSend(){qLabel()} // the box never locks: what can't go now waits in the queue (offline dims Send via CSS)
 if(SINGLE){compose.hidden=false;B.classList.add('composing')} // a turn needs a concrete session, not '*'
+// Reserve exactly the fixed composer's height, including queues, approvals, notes and safe area.
+// CSS uses this only on phones; desktop spacing is unchanged.
+new ResizeObserver(()=>{
+  document.documentElement.style.setProperty('--compose-h',compose.getBoundingClientRect().height+'px');
+}).observe(compose);
 async function post(path,body){
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json().catch(()=>({}));

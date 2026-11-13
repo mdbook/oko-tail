@@ -57,3 +57,30 @@ console.log('context parser selftest ok');
 r = subprocess.run(["node", "-e", context_test], capture_output=True, text=True, timeout=10)
 assert r.returncode == 0, r.stderr
 print(r.stdout.strip())
+
+# Bus envelopes are presentation metadata, not prose. Match only a complete leading line.
+a = js.index("const PEER="); b = js.index("function build(", a)
+peer_test = r"""
+const assert=require('node:assert/strict');
+""" + js[a:b] + r"""
+for(const stamp of ['', ', sent 2026-11-13 00:51:58 EST']){
+  for(const group of [false,true]){
+    const prefix='['+(group?'group ':'')+'DM from worker-bot@chat.example (worker)'+
+      (group?', with helper@chat.example, other@chat.example':'')+stamp+']';
+    for(const ending of ['\n','\r\n','']){
+      const raw=prefix+ending+(ending?'Body\n[DM from quoted@chat.example (quoted)]':'');
+      const match=PEER.exec(raw);
+      assert.ok(match);assert.equal(match[2],'worker-bot@chat.example');assert.equal(match[3],'worker');
+      assert.equal(match[4],group?'helper@chat.example, other@chat.example':undefined);
+      assert.equal(raw.slice(match[0].length),ending?'Body\n[DM from quoted@chat.example (quoted)]':'');
+    }
+    assert.equal(PEER.exec(prefix+' inline prose'),null);
+    assert.equal(PEER.exec('A quotation\n'+prefix),null);
+    assert.equal(PEER.exec(prefix.slice(0,-1)+'\nBody'),null);
+  }
+}
+console.log('peer envelope selftest ok');
+"""
+r = subprocess.run(["node", "-e", peer_test], capture_output=True, text=True, timeout=10)
+assert r.returncode == 0, r.stderr
+print(r.stdout.strip())
