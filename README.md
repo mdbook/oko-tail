@@ -136,6 +136,7 @@ More screenshots and the full [feature guide](docs/features.md) are in the docs.
 - [Plugins](docs/plugins.md): the optional hermes plugins and the command socket.
 - [Troubleshooting](docs/troubleshooting.md): missing data, an offline input box.
 - [Development](docs/development.md): tests, endpoints and screenshots.
+- [Embedding](docs/embedding.md): mount the same live view inside another web app.
 
 ## Contributing
 

@@ -137,6 +137,19 @@ def fake_agent(home):
     return f"http://127.0.0.1:{g.server_address[1]}", said
 
 
+def peek(page):
+    """The view is an ES module, so its state isn't global. Serve this page a view.js that also exposes an
+    evaluator inside mount(), so the checks below can read and drive it by name; the shipped file has none."""
+    def inject(route):
+        body = route.fetch().text()
+        assert body.count("\nreturn {seek,") == 1
+        route.fulfill(body=body.replace("\nreturn {seek,", "\nglobalThis.__oko=c=>eval(c);\nreturn {seek,"),
+                      content_type="text/javascript")
+    page.route("**/view.js", inject)
+    # an expression is evaluated in the view's scope; a function source (plus its one argument) is built there, then called
+    return lambda js, *arg: page.evaluate("([c,a])=>__oko('('+c+')')(a)", [js, arg[0]]) if arg else page.evaluate("c=>__oko(c)", js)
+
+
 try:
     time.sleep(0.8)
     with sync_playwright() as p:
@@ -146,8 +159,8 @@ try:
             print("ui test skipped (no chromium):", str(e).splitlines()[0]); sys.exit(0)
         pg = b.new_page(viewport={"width": 1200, "height": 800}); errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
+        ev = peek(pg)
         pg.goto(f"http://127.0.0.1:{port}/"); pg.wait_for_timeout(1500)
-        ev = pg.evaluate
         # a fresh browser opens on the night shelf; an explicit pick of the default theme ('') sticks
         assert ev("document.documentElement.dataset.theme") == "shelf-dark"
         ev("localStorage.setItem('oko.theme','')"); pg.reload(); pg.wait_for_timeout(1500)
@@ -466,8 +479,8 @@ try:
                                  "OKO_TAIL_PEERS": "staging=/staging/,bad=javascript:alert(1)"})
         time.sleep(0.8)
         pg2 = b.new_page(viewport={"width": 1200, "height": 800}); pg2.on("pageerror", lambda e: errs.append(str(e)))
+        e2 = peek(pg2)
         pg2.goto(f"http://127.0.0.1:{port2}/"); pg2.wait_for_timeout(1500)
-        e2 = pg2.evaluate
         assert not e2("document.body.classList.contains('offline')")
         # other agents (OKO_TAIL_PEERS) sit at the bottom of the session list as plain links; a bad url never gets there
         assert e2("[...document.querySelectorAll('#sesslist .so.peer')].map(a=>a.getAttribute('href')+' '+a.querySelector('.sn').textContent)") == ["/staging/ staging"]
@@ -596,7 +609,7 @@ try:
         mid = con.execute("insert into messages (session_id,role,timestamp,content) values ('s','user',?,?)",
                           (started, "synthetic keyboard stop turn")).lastrowid
         con.commit()
-        pg2.wait_for_function("canStop() && turn?.since_ts === " + json.dumps(started), timeout=5000)
+        pg2.wait_for_function("c=>__oko(c)", arg="canStop() && turn?.since_ts === " + json.dumps(started), timeout=5000)
         n = len(said); pg2.focus("#msg"); pg2.keyboard.press("Escape")
         assert e2("document.activeElement.id !== 'msg' && lastEsc > 0"), "first Escape blurs and reaches the capture handler"
         assert len(said) == n, said[n:]  # a single Escape must not stop the turn
@@ -851,6 +864,36 @@ try:
         assert "MEDIA" not in ev("[...document.querySelectorAll('.row.oko:not(.step)')].pop().textContent")
         assert ev("[...document.querySelectorAll('.row.oko:not(.step) .imgs img')].map(i=>[i.getAttribute('src'),i.naturalWidth])") == \
             [["img?id=22&n=0", 1]], ev("[...document.querySelectorAll('.row.oko:not(.step)')].pop().outerHTML")
+        # embedded: another app mounts the same view on its own element, in a shadow root, with its own base URL
+        # (the host page lives under /demo/, so a request that ignored `base` would 404) and its own navigation
+        host = ('<!doctype html><body style="margin:0"><div id=log>host log</div><div id=v style="height:600px;width:900px"></div>'
+                '<script type=module>import {mount} from "/view.js";const cfg=await (await fetch("/cfg?session=s")).json();'
+                'window.went=[];window.st=[];window.v=mount(document.getElementById("v"),'
+                '{cfg,base:"/",go:(s,id)=>went.push([s,id??null]),onStatus:x=>st.push(x)})</script>')
+        pg3 = b.new_page(viewport={"width": 1200, "height": 800}); pg3.on("pageerror", lambda e: errs.append(str(e)))
+        pg3.route("**/demo/host", lambda route: route.fulfill(body=host, content_type="text/html"))
+        pg3.goto(f"http://127.0.0.1:{port}/demo/host")
+        pg3.wait_for_function("document.getElementById('v').shadowRoot?.querySelectorAll('#log .row').length>3", timeout=5000)
+        sr = "document.getElementById('v').shadowRoot"
+        assert pg3.evaluate("[document.querySelectorAll('#log').length,document.getElementById('log').textContent]") == [1, "host log"]
+        # connected and ticking (the fake gateway is down by now, so the honest answer is offline)
+        pg3.wait_for_function(sr + ".getElementById('state').textContent.startsWith('offline, read-only')", timeout=5000)
+        assert pg3.evaluate("st.length>0 && 'kind' in st[0] && document.title===''"), "status goes to the host, not the tab title"
+        assert pg3.evaluate(f"(c=>{{const r=c.getBoundingClientRect(),h=document.getElementById('v').getBoundingClientRect();"
+                            f"return !c.hidden&&r.bottom<=h.bottom+1&&r.top>=h.top}})({sr}.getElementById('compose'))"), "composer pinned to the view"
+        pg3.evaluate(f"{sr}.getElementById('sess').click();{sr}.querySelector('.so:not(.on):not(.peer)').click()")
+        assert pg3.evaluate("[went.length,location.pathname]") == [1, "/demo/host"], pg3.evaluate("went")
+        pg3.locator("#v .row.in").first.click(); pg3.keyboard.press("?")
+        assert pg3.evaluate(f"!{sr}.getElementById('keys').hidden"), "shortcuts work once the view has focus"
+        pg3.keyboard.press("Escape")
+        assert pg3.evaluate(f"v.destroy();{sr}.childElementCount") == 0
+        # read-only: the composer is disabled and says why, and an action reports the hint instead of posting
+        pg3.evaluate("(async()=>{window.v=(await import('/view.js')).mount(document.getElementById('v'),{cfg:await (await fetch('/cfg?session=s')).json(),"
+                     "readOnly:'watch only here'})})()")
+        pg3.wait_for_function(sr + "?.getElementById('msg')?.disabled===true", timeout=5000)
+        assert pg3.evaluate(f"{sr}.getElementById('msg').placeholder") == "watch only here"
+        assert pg3.evaluate(f"{sr}.querySelector('.ob').classList.contains('readonly')")
+        pg3.evaluate("v.destroy()")
         assert not errs, errs
         b.close()
 finally:

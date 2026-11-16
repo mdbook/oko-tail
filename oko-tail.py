@@ -23,7 +23,7 @@ otherwise (socket missing, or a session other than the main one) a few are mappe
 The page opens at the last user turn; "load earlier steps" backfills from the log above it, and
 ?session=<id> focuses one session (the picker in the header switches; default: see OKO_TAIL_MAIN_*, '*' = all).
 Sending needs a concrete session, so the compose box appears only when one is focused.
-Endpoints: / (page), /app.css, /app.js, /rows?after=N&session=ID, /earlier?before=N&session=ID, /img?id=N&n=I (a row's image),
+Endpoints: / (page), /app.css, /app.js, /view.js, /cfg?session=ID, /rows?after=N&session=ID, /earlier?before=N&session=ID, /img?id=N&n=I (a row's image),
            /events (SSE; same payload as /rows: rows, turn state, live, gateway, stats), /cmds (slash menu), /queue (the agent's own queue),
            /browse (memory, profile, staged writes, skills, cron: read off $HERMES_HOME), /skill?name=X (one SKILL.md),
            POST /say {session,message} -> 202, turn streams in the background (payload.live),
@@ -785,7 +785,8 @@ def follow(args):
 # Thinking is small dim prose, replies are full-size prose. While a turn is in flight oko's tail is the
 # activity indicator (it sways while thinking, wags on tools, curls while compacting). Inline only (page sits behind auth); system fonts; all DB data via textContent.
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-STATIC = {"/app.css": "text/css; charset=utf-8", "/app.js": "text/javascript; charset=utf-8", "/favicon.svg": "image/svg+xml",
+STATIC = {"/app.css": "text/css; charset=utf-8", "/app.js": "text/javascript; charset=utf-8",
+          "/view.js": "text/javascript; charset=utf-8", "/favicon.svg": "image/svg+xml",
           "/logo.svg": "image/svg+xml"}  # fixed allowlist, no path joins from the URL
 
 
@@ -827,9 +828,7 @@ def page(args, sess):
     """index.html with the boot config inlined (JSON in a <script>: every '<' escaped, so no title can close
     the tag or open '<!--<script' and swallow the rest of the page)."""
     cfg = json.dumps(boot_cfg(args, sess))
-    mark = '<img id=brand src="brand" alt="">' if brand_type() else ""
-    return (web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__BRAND__", mark)
-            .replace("__CFG__", cfg.replace("<", "\\u003c")))
+    return web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__CFG__", cfg.replace("<", "\\u003c"))
 
 
 def _api_key(env_path=ENV):
@@ -2503,12 +2502,12 @@ def selftest():
     assert watch_progress({"progress": full("think", 1, 0, 1), "waiting": True}) is True
     assert watch_progress({"progress": full("think", 1, 0, 1), "waiting": False}) is True   # stage outlives the row
     assert watch_progress({"progress": None, "waiting": False}) is False
-    PAGE = web("index.html") + web("app.js") + web("app.css")
+    PAGE = web("index.html") + web("app.js") + web("view.js") + web("app.css")
     assert "innerHTML" not in PAGE and "insertAdjacent" not in PAGE and "__CFG__" in PAGE  # untrusted data via textContent only
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
     cfg = json.loads(re.search(r'<script id=cfg type="application/json">(.*?)</script>', pg, re.S).group(1))
     assert cfg["session"] == "s" and cfg["ms"] == 2000 and [x["id"] for x in cfg["sessions"]] == ["s", "x"], cfg
-    assert cfg["agent"] == AGENT and cfg["peers"] == PEERS and "__AGENT__" not in pg and f"Message {AGENT}," in pg
+    assert cfg["agent"] == AGENT and cfg["peers"] == PEERS and "__AGENT__" not in pg and f"<title>{AGENT} " in pg
     assert boot_cfg(argparse.Namespace(db=db, interval=2.0), "s") == cfg and cfg["brand"] is bool(brand_type())
     AGENT = "<b>&"                                                            # the name is escaped into the HTML
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
@@ -2516,12 +2515,11 @@ def selftest():
     AGENT = "hermes"
     brand0, BRAND = BRAND, ""                                                   # no OKO_TAIL_BRAND: no mark
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
-    assert "__BRAND__" not in pg and "id=brand" not in pg and brand() is None
+    assert brand() is None and boot_cfg(argparse.Namespace(db=db, interval=2.0), "s")["brand"] is False
     BRAND = os.path.join(os.path.dirname(db), "logo.svg")                      # a configured mark is shown + served
     with open(BRAND, "wb") as f:
         f.write(b"<svg/>")
-    pg = page(argparse.Namespace(db=db, interval=2.0), "s")
-    assert '<img id=brand src="brand" alt="">' in pg and brand() == (b"<svg/>", "image/svg+xml")
+    assert boot_cfg(argparse.Namespace(db=db, interval=2.0), "s")["brand"] is True and brand() == (b"<svg/>", "image/svg+xml")
     BRAND = os.path.join(os.path.dirname(db), "logo.txt")                      # not an image type: not shown
     assert brand_type() is None and brand() is None and brand_type("x/Oko.PNG") == "image/png"
     BRAND = brand0

@@ -14,7 +14,7 @@ It is deliberately small: one Python file, a few static web files, standard libr
 | Path | What lives there |
 |---|---|
 | `oko-tail.py` | the whole server: database reads, JSON and SSE endpoints, auth, the gateway proxy, and the terminal view. Python 3.9+ standard library only. |
-| `web/` | the page: `index.html`, `app.js`, `app.css`, plus the logo and favicon SVGs. Served from a fixed allowlist and read on each request. |
+| `web/` | the page: `index.html`, `view.js` (the whole view, one ES module with `mount()`), `app.js` (mounts it on the page), `app.css`, plus the logo and favicon SVGs. Served from a fixed allowlist and read on each request. Other apps embed `view.js` ([docs/embedding.md](docs/embedding.md)). |
 | `contrib/hermes-plugin/oko-tail-progress/` | the optional plugin that reports the live stage of a turn sent from elsewhere. |
 | `contrib/hermes-plugin/context-steward/` | the optional plugin that meters context size and nudges the agent near a seam. |
 | `contrib/hermes-plugin/test-plugin.py`, `test-context-steward.py` | stdlib-only tests for those two plugins. |
@@ -90,9 +90,9 @@ GitHub's runners have node already.
 - **Feature.** If it needs new configuration, add an `OKO_TAIL_*` variable with a sane default in the
   config block at the top of `oko-tail.py`, wire it into `--check`, and add a row to the Configuration
   table in `README.md`. If it changes an endpoint's payload, update the Endpoints table and the
-  `web/app.js` consumer.
+  `web/view.js` consumer.
 - **A tool-result renderer.** Some tools get their own view, keyed by tool name in the `RESULTS`
-  registry in `web/app.js`. Map a tool name to a function returning `{node, plain, used}`, or `null`
+  registry in `web/view.js`. Map a tool name to a function returning `{node, plain, used}`, or `null`
   to fall back to the generic view. A result shape the renderer does not recognize must still fall
   back cleanly.
 - **A test.** Prefer extending the existing `--selftest` in `oko-tail.py` for server behavior, the

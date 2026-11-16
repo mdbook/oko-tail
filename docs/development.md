@@ -21,7 +21,7 @@ python3 docs/shots.py --gif        # re-records docs/demo.gif (also needs ffmpeg
 | File | Contents |
 |---|---|
 | `oko-tail.py` | the server: database reads, JSON and SSE endpoints, auth, and the gateway proxy (streamed turns, stop and steer, slash commands) |
-| `web/` | the page: `index.html`, `app.css`, `app.js`, plus the logo and favicon SVGs, served from a fixed allowlist and read on each request |
+| `web/` | the page: `index.html`, `app.css`, `view.js` (the view as one ES module, see [Embedding](embedding.md)), `app.js` (mounts it on the page), plus the logo and favicon SVGs, served from a fixed allowlist and read on each request |
 | `contrib/hermes-plugin/` | the optional hermes plugins, [progress](plugins.md#live-progress-for-turns-you-didnt-send) and [context](plugins.md#keeping-context-in-check), and their tests |
 | `test-*.py` | the page tests above |
 | `docs/shots.py` | the screenshot generator |

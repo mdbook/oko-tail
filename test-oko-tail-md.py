@@ -1,6 +1,6 @@
 """md() check for oko-tail's page JS (needs node): no hangs, HTML stays text, no javascript: links."""
 import subprocess, sys
-js = open(__import__("os").path.join(__import__("os").path.dirname(__file__) or ".", "web", "app.js")).read()
+js = open(__import__("os").path.join(__import__("os").path.dirname(__file__) or ".", "web", "view.js")).read()
 a = js.index("const INL="); b = js.index("function text(cls,s,n){")
 harness = r"""
 class N{constructor(t){this.t=t;this.c=[];this.className='';this.href='';this.dataset={};}append(...x){this.c.push(...x)}set textContent(v){this.c=[String(v)]}}
@@ -19,7 +19,7 @@ assert r.returncode == 0 and len(out) == 11, (r.returncode, r.stderr[-800:])
 assert "<strong>" in out[1] and "<img" in out[1] and "<img" not in out[1].replace('"', "|").split("|")[0]  # raw HTML stays text
 assert "<table>" in out[3] and "<ol>" in out[2] and "href" not in out[6]  # tables, lists; javascript: never linked
 # the whole page block must parse as JS (a page-side edit that breaks syntax fails here, not in the browser)
-chk = subprocess.run(["node", "--check"], input=js, capture_output=True, text=True, timeout=10)
+chk = subprocess.run(["node", "--input-type=module", "--check"], input=js, capture_output=True, text=True, timeout=10)
 assert chk.returncode == 0, chk.stderr[-600:]
 hl, plain = out[9], out[10]
 assert '<span .hk>"if"' in hl and '<span .hs>"\\"a#b\\""' in hl and '<span .hn>"42"' in hl, hl  # kw, string (# inside kept), number

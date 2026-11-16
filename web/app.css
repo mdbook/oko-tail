@@ -2,7 +2,7 @@
    down it so turns and sessions stay apart. oko's replies are set in a reading serif; its work reads as a
    terminal session, with each tool call opening a recessed well that its result lands in. Every turn gets a
    tally: one tick per tool call, height = how long it ran, red = failed. That tape is the one loud element. */
-:root{
+:root,.oroot{
  --ground:#17161b;--panel:#1e1d23;--well:#111014;--rule:#2c2a33;--rule2:#3a3742;
  --ink:#ebe6dd;--dim:#9b96a4;--faint:#67626f;
  --iris:#7cc4b0;--amber:#e2a64b;--you:#c3b3ee;--you-ink:#ded6f3;--bad:#ef7a6a;--add:#8fc98a;--del:#e08378;--hunk:#8fb4e0;--term:#c2c6c9;
@@ -16,8 +16,8 @@
  --ease:cubic-bezier(.2,0,0,1);--out:cubic-bezier(.3,0,1,1);--q:120ms;--s:220ms;--l:360ms;
 }
 *{box-sizing:border-box}
-html{background:var(--ground);scroll-padding-top:5rem}
-body{margin:0;color:var(--ink);font:15px/1.5 var(--sans);-webkit-text-size-adjust:100%}
+html,.oroot{background:var(--ground);scroll-padding-top:5rem}
+.ob{margin:0;color:var(--ink);font:15px/1.5 var(--sans);-webkit-text-size-adjust:100%}
 ::selection{background:#7cc4b044}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--iris);outline-offset:2px}
@@ -33,9 +33,9 @@ header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--ground
 /* the mark: oko's tail (web/logo.svg, inlined). Dim until live; it wags while the agent works */
 #mark svg{width:1.75rem;height:1.75rem;flex:0 0 auto;opacity:.5;filter:saturate(.4);transform-origin:78% 92%;
  transition:opacity var(--s) var(--ease),filter var(--s) var(--ease)}
-:root{--fox:#f28c2e;--fox-shade:#d7611f;--fox-tip:#fbeed5;--fox-rim:none}
-body.live #mark svg,body.busy #mark svg{opacity:1;filter:none}
-body.compacting #mark svg{opacity:1;filter:none}
+:root,.oroot{--fox:#f28c2e;--fox-shade:#d7611f;--fox-tip:#fbeed5;--fox-rim:none}
+.ob.live #mark svg,.ob.busy #mark svg{opacity:1;filter:none}
+.ob.compacting #mark svg{opacity:1;filter:none}
 #mark:hover svg{transform:rotate(-9deg);transition:transform var(--l) cubic-bezier(.3,1.6,.5,1)}
 /* the site's own brand mark (OKO_TAIL_BRAND), when set: small and static, beside the controls */
 #brand{height:1.6rem;width:auto;max-width:6rem;flex:0 0 auto;object-fit:contain}
@@ -56,8 +56,8 @@ body.compacting #mark svg{opacity:1;filter:none}
 .so .sm{display:block;font-size:.74rem;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .so.on .sn:before{content:"";display:inline-block;width:.4rem;height:.4rem;border-radius:50%;background:var(--iris);margin-right:.45rem;vertical-align:.1em}
 #state{color:var(--dim);font-size:.84rem;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-body.busy #state,body.compacting #state{color:var(--amber)}
-body.offline #state{color:var(--bad)}
+.ob.busy #state,.ob.compacting #state{color:var(--amber)}
+.ob.offline #state{color:var(--bad)}
 .grow{flex:1 1 0}
 #actions{display:contents}
 #overflow{display:none}
@@ -254,7 +254,7 @@ dd{margin:0;color:var(--ink);white-space:pre-wrap;min-width:0}
 
 /* live tail + streaming ghost */
 #tail{display:none}
-body.busy #tail,body.compacting #tail{display:grid}
+.ob.busy #tail,.ob.compacting #tail{display:grid}
 #tail .bd{display:flex;align-items:center;gap:.55rem;color:var(--amber);font-size:.85rem;font-variant-numeric:tabular-nums;padding:.45rem 0}
 #tail .wisp{width:1.6rem;height:1.6rem}
 .ghost .reply{color:color-mix(in srgb,var(--ink) 88%,var(--ground))}
@@ -263,7 +263,7 @@ body.busy #tail,body.compacting #tail{display:grid}
  content:"";display:inline-block;width:1.05em;height:1.05em;margin-left:.2em;vertical-align:-.18em;
  background:url(logo.svg) center/contain no-repeat;transform-origin:78% 92%}
 @media(prefers-reduced-motion:no-preference){.ghost .reply :after{animation:flick .5s var(--ease) infinite alternate}}
-body.streaming #tail{display:none}
+.ob.streaming #tail{display:none}
 .pend .bd{color:var(--you-ink);opacity:.75}
 .pend .st{display:block;color:var(--faint);font-size:.75rem;margin-top:.2rem}
 .pend.failed .st{color:var(--bad)}
@@ -272,7 +272,7 @@ body.streaming #tail{display:none}
  background:var(--panel);color:var(--ink);border:1px solid var(--rule2);border-radius:999px;padding:.38rem .95rem;font:.8rem var(--sans);
  box-shadow:0 6px 18px #0006;opacity:0;pointer-events:none;transition:opacity var(--s) var(--ease),transform var(--s) var(--ease)}
 #jump.on{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(-4px)}
-body:not(.composing) #jump{bottom:1.2rem}
+.ob:not(.composing) #jump{bottom:1.2rem}
 #earlier{display:none;grid-template-columns:var(--gut) minmax(0,1fr);column-gap:1rem;margin:.5rem 0 0}
 #earlier button{grid-column:2;justify-self:start;background:none;border:0;padding:.25rem 0;color:var(--faint);
  font:.8rem var(--sans);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
@@ -286,7 +286,7 @@ body:not(.composing) #jump{bottom:1.2rem}
 #compose .box{display:flex;align-items:flex-end;gap:.5rem;background:var(--panel);border:1px solid var(--rule2);border-radius:10px;
  padding:.4rem .4rem .4rem .8rem;box-shadow:0 10px 30px #0007;transition:border-color var(--q) var(--ease)}
 #compose .box:focus-within{border-color:color-mix(in srgb,var(--iris) 55%,var(--rule2))}
-body.offline #compose .box{border-style:dashed}
+.ob.offline #compose .box,.ob.readonly #compose .box{border-style:dashed}
 #msg{flex:1;min-width:0;resize:none;max-height:40vh;background:transparent;color:var(--ink);border:0;outline:0;
  padding:.42rem 0;font:1rem/1.45 var(--sans);field-sizing:content}
 #msg::placeholder{color:var(--faint)}
@@ -308,13 +308,13 @@ body.offline #compose .box{border-style:dashed}
 .in .imgs{margin-top:.4rem}
 .term .imgs{display:flex;flex-wrap:wrap;gap:.4rem;margin:.45rem 0}
 .term .imgs img{width:auto;height:auto;max-width:min(100%,26rem);max-height:18rem;object-fit:contain;background:var(--well)}
-body.dragging #compose .box{border-color:var(--iris);border-style:dashed}
+.ob.dragging #compose .box{border-color:var(--iris);border-style:dashed}
 #send,#stop,#force{border-radius:7px;padding:.45rem .95rem;font:600 .84rem var(--sans);cursor:pointer;border:1px solid transparent;
  transition:background var(--q) var(--ease),opacity var(--q) var(--ease),transform var(--q) var(--ease)}
 #send{background:var(--iris);color:#10201b}
 #send:hover{background:color-mix(in srgb,var(--iris) 85%,#fff)}
 #send:active,#stop:active,#force:active{transform:scale(.97)}
-#send[disabled],body.offline #send{opacity:.4;cursor:default}
+#send[disabled],.ob.offline #send{opacity:.4;cursor:default}
 #stop{background:transparent;color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,transparent)}
 #stop:hover{background:color-mix(in srgb,var(--bad) 12%,transparent)}
 /* the explicit interrupt: a filled, higher-contrast Stop, for when the ordinary one can't reach the turn */
@@ -336,7 +336,7 @@ body.dragging #compose .box{border-color:var(--iris);border-style:dashed}
 .opt .k{color:var(--faint);font-size:.72rem}
 .opt.skill .n{color:var(--you)}
 #slash .hd{color:var(--faint);font-size:.72rem;padding:.35rem .55rem .15rem}
-body.composing main{padding-bottom:11rem}
+.ob.composing main{padding-bottom:11rem}
 
 /* keyboard help */
 #keys{position:fixed;inset:0;z-index:9;background:#0009;display:grid;place-items:center}
@@ -451,7 +451,7 @@ body.composing main{padding-bottom:11rem}
 }
 
 @media(max-width:700px){
- :root{--gut:0px}
+ :root,.oroot{--gut:0px}
  .bar{gap:.5rem;padding:.5rem .75rem}
  #mark{width:auto;font-size:1.15rem}
  #stats{display:none}
@@ -481,19 +481,19 @@ body.composing main{padding-bottom:11rem}
 
 /* frost (misty slate ground, frosted-glass panels, slate-blue accent). Follows the system
    light/dark like the site does. Toggled by the snowflake button or f; remembered per browser. */
-:root[data-theme=frost]{color-scheme:dark;
+:root[data-theme=frost],.oroot[data-theme=frost]{color-scheme:dark;
  --g-a:#1b1e26;--g-b:#14151d;--g-c:#0f1017;--g-d:#0b0c12;--fog:rgba(180,187,197,.08);
  --glass:rgba(40,44,54,.42);--glass2:rgba(48,53,64,.72);--glass-bd:rgba(180,187,197,.22);--glass-hi:rgba(210,216,224,.25);--glass-sh:rgba(0,0,0,.5);
  --ground:#0f1017;--panel:var(--glass2);--well:rgba(8,9,14,.5);--rule:rgba(215,220,226,.1);--rule2:rgba(215,220,226,.2);
  --ink:#e4e7eb;--dim:#adb3bc;--faint:#878c95;--iris:#a3b6cc;--you:#c9cfdb;--you-ink:#dfe3ea;--term:#cdd1d7;--amber:#d8b37a;--bad:#e08a80;--hunk:#9db3d8}
-@media(prefers-color-scheme:light){:root[data-theme=frost]{color-scheme:light;
+@media(prefers-color-scheme:light){:root[data-theme=frost],.oroot[data-theme=frost]{color-scheme:light;
  --fox:#ee7f22;--fox-shade:#cc5a1c;--fox-tip:#fff9ec;--fox-rim:#c98a52;
  --g-a:#eef0f3;--g-b:#cbd0d5;--g-c:#b4bac1;--g-d:#a7adb6;--fog:rgba(255,255,255,.35);
  --glass:rgba(240,242,244,.46);--glass2:rgba(244,246,247,.8);--glass-bd:rgba(255,255,255,.6);--glass-hi:rgba(255,255,255,.85);--glass-sh:rgba(31,35,44,.28);
  --ground:#cbd0d5;--well:rgba(255,255,255,.45);--rule:rgba(36,39,50,.1);--rule2:rgba(36,39,50,.2);
  --ink:#222630;--dim:#4e535c;--faint:#6f757d;--iris:#4d6a85;--you:#5f6a7d;--you-ink:#2c313c;--term:#2a2f38;--amber:#9a6412;--bad:#b0443a;
  --add:#3b7535;--del:#a4463c;--hunk:#3e6597}}
-[data-theme=frost] body{min-height:100vh;
+[data-theme=frost] .ob{min-height:100vh;
  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E"),
   radial-gradient(1100px 780px at 18% 12%,var(--g-a),transparent 62%),radial-gradient(980px 900px at 88% 84%,var(--g-c),transparent 58%),
   radial-gradient(700px 620px at 62% 40%,var(--fog),transparent 60%),linear-gradient(158deg,var(--g-b) 0%,var(--g-c) 52%,var(--g-d) 100%);
@@ -549,12 +549,12 @@ body.composing main{padding-bottom:11rem}
 /* connection dot: breathes while live, ripples while busy, red when the agent is offline */
 #state:before{content:"";display:inline-block;width:.42rem;height:.42rem;margin-right:.5rem;border-radius:50%;vertical-align:.07em;
  background:var(--faint);color:var(--faint);transition:background var(--l) var(--ease)}
-body.live #state:before{background:var(--iris);color:var(--iris)}
-body:is(.busy,.compacting) #state:before{background:var(--amber);color:var(--amber)}
-body.offline #state:before{background:var(--bad);color:var(--bad)}
+.ob.live #state:before{background:var(--iris);color:var(--iris)}
+.ob:is(.busy,.compacting) #state:before{background:var(--amber);color:var(--amber)}
+.ob.offline #state:before{background:var(--bad);color:var(--bad)}
 @media(prefers-reduced-motion:no-preference){
- body.live #state:before{animation:breathe 3.2s ease-in-out infinite}
- body:is(.busy,.compacting) #state:before{animation:ring 1.4s var(--ease) infinite}
+ .ob.live #state:before{animation:breathe 3.2s ease-in-out infinite}
+ .ob:is(.busy,.compacting) #state:before{animation:ring 1.4s var(--ease) infinite}
 }
 @keyframes breathe{50%{box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%,transparent)}}
 @keyframes ring{from{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}to{box-shadow:0 0 0 .5rem transparent}}
@@ -565,13 +565,13 @@ body.offline #state:before{background:var(--bad);color:var(--bad)}
  background:linear-gradient(90deg,var(--rule) 0 40%,var(--rule2) 50%,var(--rule) 60%) 0 0/300% 100%}
 #empty .skel i:nth-child(1){width:34%}#empty .skel i:nth-child(2){width:78%}#empty .skel i:nth-child(3){width:66%}#empty .skel i:nth-child(4){width:42%}
 @media(prefers-reduced-motion:no-preference){#empty .skel i{animation:shimmer 1.6s linear infinite}}
-body:not(.ready) #empty p,body.ready #empty .skel{display:none}
+.ob:not(.ready) #empty p,.ob.ready #empty .skel{display:none}
 #empty p{margin:0;display:flex;align-items:center;gap:.8rem}
 #empty .wisp.big{width:2.4rem;height:2.4rem}
 @media(prefers-reduced-motion:no-preference){#empty p{animation:enter .6s var(--spring)}}
 
 /* arrivals: live rows rise in, tool ticks grow out of the tape, results settle into their well */
-:root{--spring:cubic-bezier(.16,1,.3,1);--pop:cubic-bezier(.3,1.5,.5,1)}
+:root,.oroot{--spring:cubic-bezier(.16,1,.3,1);--pop:cubic-bezier(.3,1.5,.5,1)}
 @media(prefers-reduced-motion:no-preference){
  .row.enter{animation:enter .42s var(--spring) both}
  .row.in.enter{animation:enter-in .46s var(--spring) both}
@@ -603,7 +603,7 @@ body:not(.ready) #empty p,body.ready #empty .skel{display:none}
 .pend .st.ok{color:var(--iris)}
 
 /* small comforts */
-html{scrollbar-width:thin;scrollbar-color:var(--rule2) transparent}
+html,.oroot{scrollbar-width:thin;scrollbar-color:var(--rule2) transparent}
 #compose .box{transition:border-color var(--s) var(--ease),box-shadow var(--s) var(--ease)}
 #compose .box:focus-within{box-shadow:0 10px 30px #0007,0 0 0 3px color-mix(in srgb,var(--iris) 16%,transparent)}
 #send:not([disabled]):hover{transform:translateY(-1px);box-shadow:0 6px 16px -6px var(--iris)}
@@ -622,9 +622,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--rule2) transparent}
 #snow{display:none;position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
 [data-theme=frost] #snow{display:block}
 main{position:relative;z-index:1}
-[data-theme=frost] body:before{content:"";position:fixed;inset:-25%;z-index:0;pointer-events:none;
+[data-theme=frost] .ob:before{content:"";position:fixed;inset:-25%;z-index:0;pointer-events:none;
  background:radial-gradient(32% 28% at 28% 30%,var(--fog),transparent 70%),radial-gradient(30% 26% at 74% 68%,var(--fog),transparent 70%)}
-@media(prefers-reduced-motion:no-preference){[data-theme=frost] body:before{animation:fogdrift 70s ease-in-out infinite alternate}}
+@media(prefers-reduced-motion:no-preference){[data-theme=frost] .ob:before{animation:fogdrift 70s ease-in-out infinite alternate}}
 @keyframes fogdrift{to{transform:translate(9%,-6%) scale(1.12)}}
 #compose .box,.card{position:relative} /* (header is sticky, #jump fixed: both already anchor the sheen) */
 [data-theme=frost] :is(header,#compose .box,.card,#jump):before{content:"";position:absolute;inset:0 0 auto;height:46%;border-radius:inherit;
@@ -662,7 +662,7 @@ main{position:relative;z-index:1}
 .qi.steer .qt{color:var(--dim,var(--faint));font-style:italic}
 .qi.srv.stale{opacity:.75}.qi.srv.stale .qk{color:var(--bad)}
 @media(prefers-reduced-motion:no-preference){.qi{animation:enter .32s var(--spring) both}}
-body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
+.ob.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
 [data-theme=frost] .qi{background:var(--glass);border-color:var(--glass-bd);border-radius:12px;
  box-shadow:0 14px 34px -20px var(--glass-sh),0 1px 0 0 var(--glass-hi) inset;-webkit-backdrop-filter:blur(16px) saturate(1.15);backdrop-filter:blur(16px) saturate(1.15)}
 @media(max-width:700px){#queue{transform:none;max-width:none}}
@@ -670,7 +670,7 @@ body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
 /* ---- shelf: a paperback under a reading lamp. Tan laid paper (faint chain lines, edges a shade darker), brown
    ink, everything worth reading set in a Bookerly-style serif with Kindle's leading; justified replies.
    Light only, like sepia mode on a reader. The fox becomes a burnt-sienna leather bookmark of a tail. */
-:root[data-theme=shelf]{color-scheme:light;
+:root[data-theme=shelf],.oroot[data-theme=shelf]{color-scheme:light;
  --serif:Bookerly,Literata,Charter,"Iowan Old Style",Georgia,serif;
  --ground:#efe2c6;--panel:#f6ecd6;--well:#e6d5b2;--rule:#dcc9a4;--rule2:#c9b28a;
  --ink:#4a3727;--dim:#654f39;--faint:#6e5741;
@@ -680,7 +680,7 @@ body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
  --fox:#a8642a;--fox-shade:#7e4520;--fox-tip:#fbf3e2;--fox-rim:#7e4520}
 /* shelf-dark: the same book at night, dark sepia under a lamp. Brown-black paper (never grey, never #000),
    parchment ink, copper and muted amber for oko and its work. All the rules are shared via [data-theme^=shelf]. */
-:root[data-theme=shelf-dark]{color-scheme:dark;
+:root[data-theme=shelf-dark],.oroot[data-theme=shelf-dark]{color-scheme:dark;
  --serif:Bookerly,Literata,Charter,"Iowan Old Style",Georgia,serif;
  --ground:#1e1712;--panel:#2a211a;--well:#161009;--rule:#382c21;--rule2:#4b3b2c;
  --ink:#dacaac;--dim:#b8a587;--faint:#9a876d;
@@ -688,7 +688,7 @@ body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
  --hk:#e09f74;--code:#e9c99c;--lamp:rgba(255,196,120,.055);--edge:rgba(0,0,0,.38);--sh:rgba(0,0,0,.55);
  --tint:#fff6e6;--gleam:#fff3dc;--press:rgba(0,0,0,.4);--hi:rgba(255,236,200,.06);--scrim:rgba(10,6,3,.6);--chain:rgba(240,210,160,.022);--laid:rgba(240,210,160,.014);
  --fox:#cf7a36;--fox-shade:#a1561f;--fox-tip:#f1e2c4;--fox-rim:none}
-[data-theme^=shelf] body{min-height:100vh;background:
+[data-theme^=shelf] .ob{min-height:100vh;background:
   radial-gradient(120% 90% at 50% 38%,var(--lamp),transparent 62%),
   radial-gradient(150% 130% at 50% 50%,transparent 58%,var(--edge)),
   repeating-linear-gradient(90deg,transparent 0 2.6rem,var(--chain) 2.6rem calc(2.6rem + 1px)),
@@ -698,22 +698,22 @@ body.composing main{padding-bottom:calc(11rem + var(--qn,0) * 2.3rem)}
    (never repainted on scroll, unlike background-attachment:fixed on body): the paper itself (fibre grain, the page
    curving softly down into the binding on the left, the room falling off into dark), and the lamp's warm pool, which
    breathes very slowly. The composer's backdrop is the same paper (see below), so nothing cuts the texture off. */
-:root[data-theme=shelf-dark]{--paper:
+:root[data-theme=shelf-dark],.oroot[data-theme=shelf-dark]{--paper:
   radial-gradient(clamp(6rem,10vw,13rem) 80% at 0 50%,rgba(6,3,1,.26),rgba(6,3,1,.215) 10%,rgba(6,3,1,.165) 22%,rgba(6,3,1,.12) 34%,
    rgba(6,3,1,.08) 46%,rgba(6,3,1,.048) 58%,rgba(6,3,1,.025) 70%,rgba(6,3,1,.01) 83%,transparent),
   radial-gradient(140% 120% at 60% 22%,transparent 48%,rgba(5,3,1,.5)),
   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='320'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.025 .5' numOctaves='2' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .95 0 0 0 0 .82 0 0 0 0 .62 2.6 0 0 0 -1.5'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)' opacity='.035'/%3E%3C/svg%3E"),
   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .96 0 0 0 0 .84 0 0 0 0 .66 1 0 0 0 0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0 .2 .55'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='.09'/%3E%3C/svg%3E")}
-:root[data-theme=shelf-dark] body{background:var(--ground)}
-[data-theme=shelf-dark] body:before,[data-theme=shelf-dark] body:after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none}
-[data-theme=shelf-dark] body:before{background:var(--paper)}
-[data-theme=shelf-dark] body:after{will-change:opacity;background:
+:root[data-theme=shelf-dark] .ob,.oroot[data-theme=shelf-dark] .ob{background:var(--ground)}
+[data-theme=shelf-dark] .ob:before,[data-theme=shelf-dark] .ob:after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none}
+[data-theme=shelf-dark] .ob:before{background:var(--paper)}
+[data-theme=shelf-dark] .ob:after{will-change:opacity;background:
   radial-gradient(66% 58% at 64% 20%,rgba(255,186,106,.105),rgba(255,170,90,.04) 46%,transparent 74%),
   radial-gradient(30% 26% at 67% 13%,rgba(255,214,150,.045),transparent 70%)}
-@media(prefers-reduced-motion:no-preference){[data-theme=shelf-dark] body:after{animation:lamp 13s ease-in-out infinite}}
+@media(prefers-reduced-motion:no-preference){[data-theme=shelf-dark] .ob:after{animation:lamp 13s ease-in-out infinite}}
 @keyframes lamp{0%,100%{opacity:1}23%{opacity:.9}31%{opacity:.97}58%{opacity:.86}71%{opacity:.95}86%{opacity:.91}}
 [data-theme^=shelf] ::selection{background:color-mix(in srgb,var(--amber) 24%,transparent)}
-html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--rule)) transparent}
+html[data-theme^=shelf],.oroot[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--rule)) transparent}
 /* chrome stays a quiet humanist sans (like the reader's own menus); the book is the serif */
 [data-theme^=shelf] header{background:color-mix(in srgb,var(--ground) 90%,transparent);border-bottom:1px solid var(--rule)}
 [data-theme^=shelf] #mark{font-weight:500;font-style:italic;letter-spacing:0}
@@ -752,7 +752,7 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
 /* at night the composer sits on a cut-out of the same paper (pinned to the viewport like the page), fading in at its
    top edge so the log slips under it without a flat band. ponytail: iOS Safari ignores background-attachment:fixed,
    so there the vignette/fold may not line up exactly; fine, the grain and colour still match. */
-:root[data-theme=shelf-dark] #compose{background:none}
+:root[data-theme=shelf-dark] #compose,.oroot[data-theme=shelf-dark] #compose{background:none}
 [data-theme=shelf-dark] #compose:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
  background:var(--paper),var(--ground);background-attachment:fixed;
  -webkit-mask-image:linear-gradient(transparent,#000 2.4rem);mask-image:linear-gradient(transparent,#000 2.4rem)}
@@ -804,8 +804,8 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
  #actions #brand{grid-column:1/-1;max-width:100%;justify-self:center}
  #sesslist{top:3.5rem;max-height:60dvh}
  main{padding-bottom:1rem}
- body.composing main{padding-bottom:calc(var(--compose-h,8rem) + .5rem)}
- body.composing #jump{bottom:calc(var(--compose-h,8rem) + .5rem)}
+ .ob.composing main{padding-bottom:calc(var(--compose-h,8rem) + .5rem)}
+ .ob.composing #jump{bottom:calc(var(--compose-h,8rem) + .5rem)}
  #compose{padding-bottom:calc(.25rem + env(safe-area-inset-bottom))}
  #compose .box{display:grid;grid-template-columns:44px minmax(0,1fr);gap:.25rem;padding:.35rem}
  #msg{grid-row:1;grid-column:1/-1;width:100%;min-height:44px;padding:.4rem;font-size:16px}
@@ -828,7 +828,7 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
  #keys dl{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);gap:.5rem}
  #keys dt{flex-wrap:wrap}
  .ctx-head{flex-wrap:wrap}
- body :is(button,.so,.opt,.bent summary,.ctx-files summary,.imgs a){min-width:44px;min-height:44px}
+ .ob :is(button,.so,.opt,.bent summary,.ctx-files summary,.imgs a){min-width:44px;min-height:44px}
  .tape,.tape.dense{height:auto;gap:2px}
  /* Keep the duration bars small inside full-size tap targets. */
  .tick,.tape.dense .tick{width:44px;height:44px;border:solid var(--ground);
@@ -840,3 +840,11 @@ html[data-theme^=shelf]{scrollbar-color:color-mix(in srgb,var(--iris) 35%,var(--
  .cp{position:static;float:right;opacity:.6;margin:0 0 .25rem .25rem}
  .term:has(>.cp),.cpw:has(>.cp),.bd:has(>.cp),.mdpre:has(>.cp){display:flow-root}
 }
+
+/* embedded: mount() into another app's element (docs/embedding.md). The view's own root contains what the page
+   pins to the window, so position:fixed (composer, dialogs, theme backdrops) lands on the view, not the host page */
+:host{display:block;height:100%}
+.oroot{position:relative;height:100%;overflow:hidden;contain:layout paint;isolation:isolate}
+.ob.embed{height:100%;overflow-y:auto;overscroll-behavior:contain;scroll-padding-top:5rem}
+.ob.embed:focus{outline:0}
+[data-theme] .ob.embed{min-height:0}

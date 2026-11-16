@@ -6,7 +6,7 @@
   reply. Tool output renders as a terminal, JSON as tables, and markdown with syntax-highlighted code.
   File edits (`patch`, `write_file`, memory replaces) show as a colored diff with the path and +/− counts.
   Some tools get their own result view, keyed by tool name in a small registry (`RESULTS` in
-  `web/app.js`): `web_search` reads as a list of hits (linked title, domain, snippet) and
+  `web/view.js`): `web_search` reads as a list of hits (linked title, domain, snippet) and
   `web_extract`/`fetch` as page title, URL and folded text. Only http(s) URLs become links. Output the
   agent wraps in an untrusted-content banner shows a small badge with the banner text on hover. A tool
   without a renderer, or a result shape its renderer doesn't recognize, keeps the generic view. To add

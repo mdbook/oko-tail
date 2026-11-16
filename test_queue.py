@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 
-JS = (Path(__file__).parent / "web/app.js").read_text()
+JS = (Path(__file__).parent / "web/view.js").read_text()
 QUEUE = JS[JS.index("const queueEl="):JS.index("// slash commands:")]
 COMMAND = JS[JS.index("async function command(raw){"):JS.index("// ---- search:")]
 STORAGE = JS[JS.index("const store="):JS.index("function dur(")]
@@ -39,6 +39,7 @@ function page(saved=new Map()){
     const B=new Node(), compose={}, msgBox=new Node(), sendBtn=new Node(), cnotes=new Node();
     const document={hidden:false,addEventListener(){}}, listeners=new Map();
     const addEventListener=(name,fn)=>listeners.set(name,fn);
+    const KT={addEventListener}, SIG={}, SP='oko.', F=(...a)=>fetch(...a);
     const setInterval=()=>{}, setTimeout=()=>{}, tick=()=>{}, hhmm=()=>'';
     let compacting=false,turn=null,live=null,pend=null,gatewayUp=true,images=[];
     const running=r=>r&&['running','starting'].includes(r.status);
@@ -181,7 +182,7 @@ def test_interrupt_uses_acknowledged_path_once_and_falls_back_only_before_dispat
       const ready=pending(), discoveryCalls=[];
       let synced=0;
       const context=vm.createContext({LOCAL:[],msgBox:{addEventListener(){}},qs:path=>path,
-        fetch:async path=>{discoveryCalls.push(path);return {json:()=>ready.promise}},
+        F:async path=>{discoveryCalls.push(path);return {json:()=>ready.promise}},
         syncStop:()=>{synced++}});
       vm.runInContext(discovery,context);
       assert.deepEqual(discoveryCalls,['cmds']);assert.equal(synced,0);
