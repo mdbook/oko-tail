@@ -817,11 +817,16 @@ def brand():
         return None
 
 
+def boot_cfg(args, sess):
+    """The page's boot config, also served as GET /cfg for clients that render their own UI."""
+    return {"session": sess, "main": main_session(args.db), "agent": AGENT, "ms": int(args.interval * 1000),
+            "sessions": sessions_list(args.db), "peers": PEERS, "owner": OWNER[1], "brand": bool(brand_type())}
+
+
 def page(args, sess):
     """index.html with the boot config inlined (JSON in a <script>: every '<' escaped, so no title can close
     the tag or open '<!--<script' and swallow the rest of the page)."""
-    cfg = json.dumps({"session": sess, "main": main_session(args.db), "agent": AGENT, "ms": int(args.interval * 1000),
-                      "sessions": sessions_list(args.db), "peers": PEERS, "owner": OWNER[1]})
+    cfg = json.dumps(boot_cfg(args, sess))
     mark = '<img id=brand src="brand" alt="">' if brand_type() else ""
     return (web("index.html").replace("__AGENT__", html.escape(AGENT)).replace("__BRAND__", mark)
             .replace("__CFG__", cfg.replace("<", "\\u003c")))
@@ -1817,6 +1822,8 @@ def handler(args, auth, hosts=None):
                 return self.send_data(data, "application/json")
             if self.path.startswith("/rows"):
                 data, ctype = json.dumps(payload(args, after, sess)).encode(), "application/json"
+            elif urlparse(self.path).path == "/cfg":
+                data, ctype = json.dumps(boot_cfg(args, sess)).encode(), "application/json"
             elif urlparse(self.path).path == "/ctx":
                 data, ctype = json.dumps(context_items(args.db, sess) if sess != "*" else None).encode(), "application/json"
             elif urlparse(self.path).path == "/tools":
@@ -2502,6 +2509,7 @@ def selftest():
     cfg = json.loads(re.search(r'<script id=cfg type="application/json">(.*?)</script>', pg, re.S).group(1))
     assert cfg["session"] == "s" and cfg["ms"] == 2000 and [x["id"] for x in cfg["sessions"]] == ["s", "x"], cfg
     assert cfg["agent"] == AGENT and cfg["peers"] == PEERS and "__AGENT__" not in pg and f"Message {AGENT}," in pg
+    assert boot_cfg(argparse.Namespace(db=db, interval=2.0), "s") == cfg and cfg["brand"] is bool(brand_type())
     AGENT = "<b>&"                                                            # the name is escaped into the HTML
     pg = page(argparse.Namespace(db=db, interval=2.0), "s")
     assert "<b>&" not in pg.split('<script id=cfg')[0] and "&lt;b&gt;&amp;" in pg
