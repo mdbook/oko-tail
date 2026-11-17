@@ -65,7 +65,7 @@ function skeleton(){
     h('~g',{'clip-path':'url(#fox-clip)'},h('~rect',{class:'fur',width:64,height:64}),
       h('~path',{class:'shade',d:'M7 16.4C14.5 19.3 25.8 21.1 33.3 31.5C39.9 40.9 39.9 50.3 38 61.6L-5.2 61.6L-5.2 16.4Z'}),h('~path',{class:'tip',d:TIP})),
     h('~g',{'clip-path':'url(#fox-tipclip)'},h('~path',{class:'rim',d:FOX})));
-  const mark=h('a',{id:'mark',href:OPT.go?'#':'./',title:'oko\'s tail: back to the default session'},fox,AG);
+  const mark=h('a',{id:'mark',href:OPT.go?'#':'./',title:'oko\'s tail: back to the default session'},fox,'oko-tail');
   if(OPT.go)mark.onclick=e=>{e.preventDefault();OPT.go(CFG.main||cur)};
   const brand=OPT.brand!==undefined?OPT.brand:CFG.brand?BASE+'brand':null;
   const keys=[['j / k','Next / previous turn'],['s','Show or hide tool steps'],['/','Search'],['f','Next theme (default, frost, shelf, shelf at night)'],

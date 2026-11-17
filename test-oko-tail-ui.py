@@ -46,6 +46,7 @@ with open(os.path.join(d, "shot.png"), "wb") as f: f.write(__import__("base64").
 # an assistant reply attaching an image as a `MEDIA:<path>` line. The path is the one the agent's HOST saw, under
 # OKO_TAIL_HOST_HOME; the file only exists at the same relative place under HERMES_HOME (what a container mount is).
 HOST_HOME = "/host/hermes"
+AGENT = "example-desktop-agent-with-a-long-name"
 os.makedirs(os.path.join(d, "cache", "scratch"))
 with open(os.path.join(d, "cache", "scratch", "river.png"), "wb") as f: f.write(__import__("base64").b64decode(PNG))
 con.execute("insert into sessions values ('img','zulip','Pictures',0,1)")
@@ -64,7 +65,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 srv = subprocess.Popen([sys.executable, os.path.join(here, "oko-tail.py"), "--serve", str(port), "--db", db, "--session", "s",
                         "--gateway", "http://127.0.0.1:9", "--env", os.devnull], stderr=subprocess.DEVNULL,
                        env={**os.environ, "HERMES_HOME": d, "OKO_TAIL_HOST_HOME": HOST_HOME,
-                            "OKO_TAIL_OWNER": "me@chat.example=Mik"})  # d has no oko-tail.sock
+                            "OKO_TAIL_OWNER": "me@chat.example=Mik", "OKO_TAIL_AGENT": AGENT})  # d has no oko-tail.sock
 srv2 = None
 
 
@@ -161,6 +162,10 @@ try:
         pg.on("pageerror", lambda e: errs.append(str(e)))
         ev = peek(pg)
         pg.goto(f"http://127.0.0.1:{port}/"); pg.wait_for_timeout(1500)
+        assert ev("$('mark').lastChild.textContent") == "oko-tail"
+        assert ev("getComputedStyle($('mark')).whiteSpace") == "nowrap"
+        assert ev("$('mark').scrollWidth<=$('mark').clientWidth"), "desktop mark fits"
+        assert ev("$('msg').placeholder") == f"Message {AGENT}, or / for commands"
         # a fresh browser opens on the night shelf; an explicit pick of the default theme ('') sticks
         assert ev("document.documentElement.dataset.theme") == "shelf-dark"
         ev("localStorage.setItem('oko.theme','')"); pg.reload(); pg.wait_for_timeout(1500)
@@ -783,6 +788,20 @@ try:
         e2("handle({rows:[],gateway:true})"); pg2.wait_for_function("document.getElementById('appr').hidden", timeout=3000)
         # Phone sweep: the same controls remain usable without consuming the input row.
         def phone_fits():
+            header = e2("""(()=>{
+                const name=$('sessname'), saved=name.textContent;
+                name.textContent='example-desktop-agent-'.repeat(20);
+                const mark=$('mark').getBoundingClientRect(), sess=$('sess').getBoundingClientRect(),
+                    menu=$('overflow').getBoundingClientRect();
+                const fits=$('mark').lastChild.textContent==='oko-tail' &&
+                    getComputedStyle($('mark')).whiteSpace==='nowrap' &&
+                    $('mark').scrollWidth<=$('mark').clientWidth &&
+                    mark.left>=0 && mark.right<=sess.left && sess.width>=44 &&
+                    sess.right<=menu.left && menu.right<=innerWidth;
+                name.textContent=saved;
+                return fits;
+            })()""")
+            assert header, (width, "long session header overflow")
             assert e2("document.documentElement.scrollWidth<=innerWidth"), (width, "page overflow")
             assert e2("compose.scrollWidth<=compose.clientWidth"), (width, "composer overflow")
             small = e2("[...document.querySelectorAll('button,.so,.opt')].filter(b=>b.getClientRects().length && getComputedStyle(b).visibility!=='hidden').filter(b=>{const r=b.getBoundingClientRect();return r.width<44 || r.height<44}).map(b=>[b.id,b.className,b.getBoundingClientRect().width,b.getBoundingClientRect().height])")
@@ -790,7 +809,7 @@ try:
 
         pg2.emulate_media(reduced_motion="reduce")  # measure settled targets, not the dialog's pop-in transform
         e2("handle({rows:[{id:2000,session:'s',role:'user',ts:Date.now()/1000,content:'A long path: /'+ 'segment'.repeat(100)+'\\n\\n```\\n'+'code'.repeat(100)+'\\n```',tool_calls:[]}],gateway:true})")
-        for width in (360, 390, 430):
+        for width in (320, 360, 390, 430):
             pg2.set_viewport_size({"width": width, "height": 800})
             pg2.wait_for_timeout(100)
             # Busy and idle controls; inspect synchronously so heartbeat updates cannot race the fixture.
