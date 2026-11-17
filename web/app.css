@@ -475,6 +475,11 @@ dd{margin:0;color:var(--ink);white-space:pre-wrap;min-width:0}
  .term{margin-left:-.35rem;margin-right:-.35rem}
  #compose{padding:0 .5rem calc(.5rem + env(safe-area-inset-bottom))}
  #compose .box,#cnotes,#slash,#thumbs{transform:none;max-width:none}
+ /* watch-only on a phone: the composer is one muted line (no attach, no Send); embedded, the host names the agent */
+ .ob.readonly #attach,.ob.readonly #send{display:none}
+ .ob.readonly #msg{field-sizing:fixed;height:2.3rem;font:.8rem/1.4 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:.6rem .4rem}
+ .ob.embed .bar{padding:.4rem .6rem}
+ .ob.embed #mark{font-size:0;gap:0}
  @keyframes pop{from{opacity:0;transform:translateY(4px)}}
  .opt{grid-template-columns:auto minmax(0,1fr)}.opt .k{display:none}
 }
